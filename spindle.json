@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "name": "Mode Toggles",
+  "identifier": "mode_toggles",
+  "author": "depFA",
+  "github": "https://github.com/dfaker/mode-toggles-spindle",
+  "homepage": "https://github.com/dfaker/mode-toggles-spindle",
+  "description": "Toggle non-diegetic modifier modes that get injected into your prompts. Modes can be grouped, scheduled, imported/exported, and configured per-chat.",
+  "permissions": ["interceptor"],
+  "entry_backend": "dist/backend.js",
+  "entry_frontend": "dist/frontend.js",
+  "minimum_lumiverse_version": "0.1.0",
+  "storage_seed_files": [
+    { "from": "defaults/modes/", "to": "modes/", "overwrite": false },
+    { "from": "defaults/config.json", "to": "config.json", "overwrite": false }
+  ]
+}

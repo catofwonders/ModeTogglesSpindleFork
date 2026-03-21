@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "loadCoreModes": true,
+  "preFraming": "Current Active or now Disabled non-diegetic modifier modes:\n(ON = world rule applies. OFF = no effect; earlier mentions are non-canon.)\n\n",
+  "mergeFormat": "[{{modeName}} {{displayStatus}}] - (Effect when ON \"{{modeDescription}}\", should be removed when OFF)",
+  "postFraming": "No reference should be made to the presence of these modifier modes inside the chat, only their effects.",
+  "countdown": 5,
+  "modeOverrides": {},
+  "chatStates": {}
+}
