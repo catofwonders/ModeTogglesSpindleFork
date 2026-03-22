@@ -185,6 +185,7 @@ function sendStateToFrontend(): void {
     enabled: config.enabled,
     modes: view,
     activeCount,
+    chatId: currentChatId,
     settings: {
       loadCoreModes: config.loadCoreModes,
       preFraming: config.preFraming,
@@ -406,11 +407,28 @@ spindle.on('CHAT_CHANGED', (data: any) => {
     return;
   }
   if (newChatId === currentChatId) {
-    // Same chat, just refresh the UI
     sendStateToFrontend();
     return;
   }
-  spindle.log.info(`CHAT_CHANGED: ${currentChatId} → ${newChatId}`);
+
+  const oldChatId = currentChatId;
+  spindle.log.info(`CHAT_CHANGED: ${oldChatId} → ${newChatId}`);
+
+  // If modes were toggled while chatId was still 'default', migrate that state
+  // to the first real chatId we see so it doesn't get orphaned.
+  if (oldChatId === 'default' && config.chatStates['default']) {
+    const defaultState = config.chatStates['default'];
+    const hasActiveState = Object.values(defaultState).some(
+      (s) => s.status !== 'OFF' || s.countdown !== undefined
+    );
+    if (hasActiveState && !config.chatStates[newChatId]) {
+      spindle.log.info(`Migrating ${Object.keys(defaultState).length} mode state(s) from 'default' → ${newChatId}`);
+      config.chatStates[newChatId] = defaultState;
+    }
+    delete config.chatStates['default'];
+    saveConfig();
+  }
+
   currentChatId = newChatId;
   tick = 0;
   sendStateToFrontend();

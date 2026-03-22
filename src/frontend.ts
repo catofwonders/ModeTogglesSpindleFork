@@ -14,6 +14,7 @@ interface StateUpdate {
   enabled: boolean;
   modes: ModeView[];
   activeCount: number;
+  chatId: string;
   settings: {
     loadCoreModes: boolean;
     preFraming: string;
@@ -185,6 +186,14 @@ export function setup(ctx: SpindleFrontendContext) {
       ctx.sendToBackend({ type: 'set_enabled', enabled: enableCb.checked }));
     enableLabel.append(enableCb, document.createTextNode(' Enable Mode Toggles'));
     container.appendChild(enableLabel);
+
+    // Chat ID debug label
+    const chatIdLabel = mkEl('div');
+    chatIdLabel.style.cssText = 'font-size:10px;color:var(--lumiverse-text-dim,#666);margin-bottom:8px;font-family:monospace;';
+    const shortId = state.chatId.length > 16 ? state.chatId.slice(0, 8) + '…' + state.chatId.slice(-8) : state.chatId;
+    chatIdLabel.textContent = `Chat: ${shortId}`;
+    chatIdLabel.title = state.chatId;
+    container.appendChild(chatIdLabel);
 
     // Load core modes
     const coreLabel = mkEl('label', 'mt-label');
