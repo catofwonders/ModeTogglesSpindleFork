@@ -58,7 +58,7 @@ let currentChatId = 'default';
 // ===== Storage Helpers =====
 async function loadConfig(): Promise<void> {
   try {
-    const raw = await spindle.storage.readFile('config.json');
+    const raw = await spindle.storage.read('config.json');
     if (raw) {
       const parsed = JSON.parse(raw);
       config = { ...config, ...parsed };
@@ -70,7 +70,7 @@ async function loadConfig(): Promise<void> {
 
 async function saveConfig(): Promise<void> {
   try {
-    await spindle.storage.writeFile('config.json', JSON.stringify(config, null, 2));
+    await spindle.storage.write('config.json', JSON.stringify(config, null, 2));
   } catch (e) {
     spindle.log.error(`Failed to save config: ${e}`);
   }
@@ -80,7 +80,7 @@ async function loadCoreModesFromStorage(): Promise<void> {
   const all: ModeDefinition[] = [];
   for (let n = 1; ; n++) {
     try {
-      const text = await spindle.storage.readFile(`modes/modes_${n}.txt`);
+      const text = await spindle.storage.read(`modes/modes_${n}.txt`);
       if (!text) break;
       const lines = text.split('\n').map((l: string) => l.trim()).filter(Boolean);
       for (const line of lines) {
@@ -146,7 +146,7 @@ function getModesView(chatId: string): ModeView[] {
 function sendStateToFrontend(): void {
   const view = getModesView(currentChatId);
   const activeCount = view.filter((m) => m.status === 'ON').length;
-  spindle.frontend.send({
+  spindle.sendToFrontend({
     type: 'state_update',
     enabled: config.enabled,
     modes: view,
@@ -162,7 +162,7 @@ function sendStateToFrontend(): void {
 }
 
 // ===== Message Handler from Frontend =====
-spindle.frontend.onMessage(async (payload: any) => {
+spindle.onFrontendMessage(async (payload: any) => {
   switch (payload.type) {
     case 'request_state':
       sendStateToFrontend();
@@ -256,7 +256,7 @@ spindle.frontend.onMessage(async (payload: any) => {
       const lines = Object.entries(config.modeOverrides).map(
         ([name, ov]) => `${name} - ${ov.group || 'Unsorted'} - ${ov.description}`
       );
-      spindle.frontend.send({ type: 'export_data', text: lines.join('\n'), count: lines.length });
+      spindle.sendToFrontend({ type: 'export_data', text: lines.join('\n'), count: lines.length });
       break;
     }
 
@@ -336,7 +336,7 @@ spindle.frontend.onMessage(async (payload: any) => {
 });
 
 // ===== Events =====
-spindle.events.on('chat_changed', (data: any) => {
+spindle.on('CHAT_CHANGED', (data: any) => {
   currentChatId = data?.chatId || 'default';
   tick = 0;
   sendStateToFrontend();
