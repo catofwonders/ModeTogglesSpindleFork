@@ -265,14 +265,6 @@ export function setup(ctx: SpindleFrontendContext) {
     btnRow.append(removeBtn, resetBtn);
     container.appendChild(btnRow);
 
-    const btnRow2 = mkEl('div', 'mt-btn-row');
-    const cleanupBtn = document.createElement('button');
-    cleanupBtn.className = 'mt-btn';
-    cleanupBtn.textContent = 'Clean Up Deleted Chats';
-    cleanupBtn.addEventListener('click', () => send({ type: 'cleanup_orphans' }));
-    btnRow2.append(cleanupBtn);
-    container.appendChild(btnRow2);
-
     root.appendChild(container);
   }
 

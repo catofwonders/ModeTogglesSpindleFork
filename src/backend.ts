@@ -102,31 +102,6 @@ async function saveConfig(): Promise<void> {
   }
 }
 
-async function cleanupOrphanedStates(userId?: string): Promise<void> {
-  const chatIds = Object.keys(config.chatStates);
-  if (chatIds.length === 0) {
-    toast.info('No chat states to clean up');
-    return;
-  }
-
-  let removed = 0;
-  for (const chatId of chatIds) {
-    if (chatId === 'default') { delete config.chatStates[chatId]; removed++; continue; }
-    try {
-      const chat = await (spindle as any).chats?.get(chatId, userId);
-      if (!chat) { delete config.chatStates[chatId]; removed++; }
-    } catch {
-      // Can't verify — leave it alone
-    }
-  }
-  if (removed > 0) {
-    await saveConfig();
-    toast.success(`Cleaned up ${removed} orphaned chat state(s)`);
-  } else {
-    toast.info('All chat states are valid');
-  }
-}
-
 async function loadCoreModesFromStorage(): Promise<void> {
   const all: ModeDefinition[] = [];
   const seen = new Set<string>();
@@ -464,12 +439,6 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         }
       }
       await saveConfig();
-      sendStateToFrontend();
-      break;
-    }
-
-    case 'cleanup_orphans': {
-      await cleanupOrphanedStates(currentUserId);
       sendStateToFrontend();
       break;
     }
