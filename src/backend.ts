@@ -17,7 +17,7 @@ interface ModeDefinition {
 }
 
 interface ModeState {
-  status: 'OFF' | 'ON' | 'Activating' | 'Deactivating';
+  status: 'OFF' | 'ON';
   countdown?: number;
   schedule?: string;
 }
@@ -75,6 +75,22 @@ async function loadConfig(): Promise<void> {
   } catch (e) {
     spindle.log.warn('Could not load config, using defaults');
   }
+
+  // Migrate: clean up stale transition states from older versions
+  let dirty = false;
+  for (const chatId of Object.keys(config.chatStates)) {
+    const states = config.chatStates[chatId];
+    for (const [name, st] of Object.entries(states)) {
+      if ((st.status as string) === 'Activating') { st.status = 'ON'; dirty = true; }
+      if ((st.status as string) === 'Deactivating') { st.status = 'OFF'; st.countdown = config.countdown; dirty = true; }
+    }
+  }
+  // Also clean up orphaned 'default' bucket
+  if (config.chatStates['default']) {
+    delete config.chatStates['default'];
+    dirty = true;
+  }
+  if (dirty) saveConfig();
 }
 
 async function saveConfig(): Promise<void> {
@@ -215,15 +231,13 @@ spindle.onFrontendMessage(async (payload: any) => {
       if (!config.enabled) return;
       const state = getChatState(chatId);
       const curr = state[payload.modeName]?.status ?? 'OFF';
-      let next: ModeState['status'];
-      switch (curr) {
-        case 'OFF':          next = 'Activating'; break;
-        case 'ON':           next = 'Deactivating'; break;
-        case 'Activating':   next = 'OFF'; break;
-        case 'Deactivating': next = 'ON'; break;
-        default:             next = 'OFF';
+      const next = curr === 'ON' ? 'OFF' : 'ON';
+      if (next === 'ON') {
+        state[payload.modeName] = { status: 'ON', schedule: state[payload.modeName]?.schedule || 'X' };
+      } else {
+        // Turning off — start countdown for lingering in prompts
+        state[payload.modeName] = { status: 'OFF', countdown: config.countdown, schedule: state[payload.modeName]?.schedule || 'X' };
       }
-      state[payload.modeName] = { status: next, schedule: state[payload.modeName]?.schedule || 'X' };
       await saveConfig();
       sendStateToFrontend();
       break;
@@ -365,9 +379,9 @@ spindle.onFrontendMessage(async (payload: any) => {
       const st = getChatState(chatId);
       let count = 0;
       for (const [, s] of Object.entries(st)) {
-        if (s.status === 'ON' || s.status === 'Activating' || s.status === 'Deactivating') {
-          s.status = 'Deactivating';
-          delete s.countdown;
+        if (s.status === 'ON') {
+          s.status = 'OFF';
+          s.countdown = config.countdown;
           count++;
         }
       }
@@ -385,7 +399,7 @@ spindle.onFrontendMessage(async (payload: any) => {
       if (inactive.length === 0) { toast.info('No inactive modes available'); return; }
       const pick = inactive[Math.floor(Math.random() * inactive.length)];
       const st = getChatState(chatId);
-      st[pick.name] = { status: 'Activating', schedule: st[pick.name]?.schedule || 'X' };
+      st[pick.name] = { status: 'ON', schedule: st[pick.name]?.schedule || 'X' };
       await saveConfig();
       sendStateToFrontend();
       toast.success(`Randomly activated: ${pick.name}`);
@@ -437,29 +451,29 @@ spindle.registerInterceptor(async (messages, ctx) => {
   const state = getChatState(chatId);
   const view = getModesView(chatId);
 
+  // Include modes that are ON, or OFF but still in countdown (lingering)
   const modesToInclude = view.filter((m) => {
-    const activeish = m.status === 'ON' || m.status === 'Activating' || m.status === 'Deactivating';
-    const wasActiveButOff = state[m.name] && m.status === 'OFF';
-    return activeish || wasActiveButOff;
+    if (m.status === 'ON') return true;
+    if (m.status === 'OFF' && state[m.name]?.countdown !== undefined) return true;
+    return false;
   });
 
   if (modesToInclude.length > 0 && messages.length > 0) {
     const mergeFormat = config.mergeFormat || DEFAULT_MERGE_FORMAT;
     const lines = modesToInclude.map((m) => {
-      let displayStatus = m.status;
-      if (displayStatus === 'Activating') displayStatus = 'ON';
-      if (displayStatus === 'Deactivating') displayStatus = 'OFF';
+      const displayStatus = m.status; // just ON or OFF, no translation needed
 
       const schedule = m.schedule || 'X';
       const tickChar = schedule[tick % schedule.length];
       const prob = parseInt(tickChar.replace('X', '10').replace('-', '0')) * 10;
       const active = Math.round(Math.random() * 100) <= prob;
 
-      if (displayStatus === 'ON' && !active) displayStatus = 'OFF';
+      // Schedule can suppress an ON mode for this tick
+      const finalStatus = (displayStatus === 'ON' && !active) ? 'OFF' : displayStatus;
 
       return mergeFormat
         .replaceAll('{{modeName}}', m.name)
-        .replaceAll('{{displayStatus}}', displayStatus)
+        .replaceAll('{{displayStatus}}', finalStatus)
         .replaceAll('{{modeDescription}}', m.description);
     });
 
@@ -476,14 +490,10 @@ spindle.registerInterceptor(async (messages, ctx) => {
     }
   }
 
-  // Apply transitions and countdowns
+  // Tick down countdowns for OFF modes and clean up expired ones
   const removed: string[] = [];
   for (const [name, st] of Object.entries(state)) {
-    if (st.status === 'Activating') {
-      st.status = 'ON'; delete st.countdown;
-    } else if (st.status === 'Deactivating') {
-      st.status = 'OFF'; st.countdown = config.countdown;
-    } else if (st.status === 'OFF' && st.countdown !== undefined) {
+    if (st.status === 'OFF' && st.countdown !== undefined) {
       st.countdown--;
       if (st.countdown <= 0) { delete state[name]; removed.push(name); }
     }

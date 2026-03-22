@@ -85,8 +85,6 @@ export function setup(ctx: SpindleFrontendContext) {
     .mt-mode-on { background: rgba(0,255,0,0.08); color: #90EE90; }
     .mt-mode-off { background: rgba(255,0,0,0.06); color: #FFB6C1; }
     .mt-mode-countdown { background: rgba(255,165,0,0.08); color: #FFD700; }
-    .mt-mode-activating { background: rgba(255,255,0,0.08); color: #FFD700; }
-    .mt-mode-deactivating { background: rgba(255,165,0,0.08); color: #FFA500; }
     .mt-separator { border-top: 2px solid var(--lumiverse-border, #555); margin: 6px 0; }
     .mt-action-btn { cursor: pointer; padding: 5px 10px; font-size: 12px; text-align: center;
       border-radius: var(--lumiverse-radius, 3px); flex: 1; }
@@ -357,8 +355,7 @@ export function setup(ctx: SpindleFrontendContext) {
       !q || `${m.name} ${m.group} ${m.description}`.toLowerCase().includes(q)
     );
 
-    const isActiveish = (m: ModeView) =>
-      m.status === 'ON' || m.status === 'Activating' || m.status === 'Deactivating';
+    const isActiveish = (m: ModeView) => m.status === 'ON';
 
     // Enabled section
     const enabled = filtered.filter(isActiveish).sort((a, b) => a.name.localeCompare(b.name));
@@ -425,8 +422,6 @@ export function setup(ctx: SpindleFrontendContext) {
     let cls = 'mt-mode-off';
     let statusText = mode.status;
     if (mode.status === 'ON') cls = 'mt-mode-on';
-    else if (mode.status === 'Activating') cls = 'mt-mode-activating';
-    else if (mode.status === 'Deactivating') cls = 'mt-mode-deactivating';
     else if (mode.status === 'OFF' && mode.countdown !== undefined) {
       cls = 'mt-mode-countdown';
       statusText = `OFF(${mode.countdown})`;
@@ -492,7 +487,7 @@ export function setup(ctx: SpindleFrontendContext) {
   function showScheduleDialog() {
     if (!state) return;
     const activeModes = state.modes.filter(
-      (m) => m.status === 'ON' || m.status === 'Activating'
+      (m) => m.status === 'ON'
     );
     if (activeModes.length === 0) {
       alert('No active modes to schedule.');
