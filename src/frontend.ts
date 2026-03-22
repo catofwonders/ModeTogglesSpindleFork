@@ -151,21 +151,6 @@ export function setup(ctx: SpindleFrontendContext) {
     }
   });
 
-  // ===== Frontend-side CHAT_CHANGED =====
-  // When the user switches chats, tell the backend immediately so it sends
-  // the correct state — don't wait for the backend's own CHAT_CHANGED.
-  try {
-    (ctx as any).on('CHAT_CHANGED', (data: any) => {
-      const newId = data?.chatId;
-      if (newId && newId !== currentChatId) {
-        currentChatId = newId;
-        send({ type: 'request_state' });
-      }
-    });
-  } catch {
-    // ctx.on may not exist on all Lumiverse versions — backend events are the fallback
-  }
-
   // Request initial state
   send({ type: 'request_state' });
 

@@ -193,7 +193,15 @@ function getModesView(chatId: string): ModeView[] {
 }
 
 // ===== Frontend Communication =====
-function sendStateToFrontend(): void {
+async function sendStateToFrontend(): Promise<void> {
+  // Always check the actual active chat — events are unreliable
+  try {
+    const active = await (spindle as any).chats?.getActive();
+    if (active?.id && active.id !== currentChatId) {
+      currentChatId = active.id;
+    }
+  } catch { /* chats permission may not be granted — use whatever currentChatId is */ }
+
   const view = getModesView(currentChatId);
   const activeCount = view.filter((m) => m.status === 'ON').length;
   spindle.sendToFrontend({
@@ -224,7 +232,7 @@ spindle.onFrontendMessage(async (payload: any) => {
 
   switch (payload.type) {
     case 'request_state':
-      sendStateToFrontend();
+      await sendStateToFrontend();
       break;
 
     case 'toggle_mode': {
@@ -239,14 +247,14 @@ spindle.onFrontendMessage(async (payload: any) => {
         state[payload.modeName] = { status: 'OFF', countdown: config.countdown, schedule: state[payload.modeName]?.schedule || 'X' };
       }
       await saveConfig();
-      sendStateToFrontend();
+      await sendStateToFrontend();
       break;
     }
 
     case 'set_enabled':
       config.enabled = payload.enabled;
       await saveConfig();
-      sendStateToFrontend();
+      await sendStateToFrontend();
       toast.info(config.enabled ? 'Mode Toggles enabled' : 'Mode Toggles disabled');
       break;
 
@@ -257,7 +265,7 @@ spindle.onFrontendMessage(async (payload: any) => {
       if (payload.postFraming !== undefined) config.postFraming = payload.postFraming;
       if (payload.countdown !== undefined) config.countdown = payload.countdown;
       await saveConfig();
-      sendStateToFrontend();
+      await sendStateToFrontend();
       break;
 
     case 'add_edit_mode': {
@@ -279,7 +287,7 @@ spindle.onFrontendMessage(async (payload: any) => {
         toast.success(`Mode "${payload.name}" saved`);
       }
       await saveConfig();
-      sendStateToFrontend();
+      await sendStateToFrontend();
       break;
     }
 
@@ -332,7 +340,7 @@ spindle.onFrontendMessage(async (payload: any) => {
         imported++;
       }
       await saveConfig();
-      sendStateToFrontend();
+      await sendStateToFrontend();
       if (imported > 0) toast.success(`Imported ${imported} mode(s)`);
       if (errors > 0) toast.warning(`${errors} line(s) skipped due to format errors`);
       break;
@@ -357,7 +365,7 @@ spindle.onFrontendMessage(async (payload: any) => {
         for (const name of toRemove) delete config.chatStates[chatId][name];
       }
       await saveConfig();
-      sendStateToFrontend();
+      await sendStateToFrontend();
       toast.success('All custom modes removed');
       break;
     }
@@ -370,7 +378,7 @@ spindle.onFrontendMessage(async (payload: any) => {
         modeOverrides: {}, chatStates: {},
       };
       await saveConfig();
-      sendStateToFrontend();
+      await sendStateToFrontend();
       toast.success('Extension reset to defaults');
       break;
 
@@ -386,7 +394,7 @@ spindle.onFrontendMessage(async (payload: any) => {
         }
       }
       await saveConfig();
-      sendStateToFrontend();
+      await sendStateToFrontend();
       if (count > 0) toast.success(`Disabled ${count} mode(s)`);
       else toast.info('No active modes to disable');
       break;
@@ -401,7 +409,7 @@ spindle.onFrontendMessage(async (payload: any) => {
       const st = getChatState(chatId);
       st[pick.name] = { status: 'ON', schedule: st[pick.name]?.schedule || 'X' };
       await saveConfig();
-      sendStateToFrontend();
+      await sendStateToFrontend();
       toast.success(`Randomly activated: ${pick.name}`);
       break;
     }
@@ -415,26 +423,25 @@ spindle.onFrontendMessage(async (payload: any) => {
         }
       }
       await saveConfig();
-      sendStateToFrontend();
+      await sendStateToFrontend();
       break;
     }
   }
 });
 
 // ===== Events =====
-spindle.on('CHAT_CHANGED', (data: any) => {
+spindle.on('CHAT_CHANGED', async (data: any) => {
   const newChatId = data?.chatId;
   if (!newChatId) return;
   if (newChatId === currentChatId) return;
-  spindle.log.info(`CHAT_CHANGED: ${currentChatId} → ${newChatId}`);
   currentChatId = newChatId;
   tick = 0;
-  sendStateToFrontend();
+  await sendStateToFrontend();
 });
 
 // Refresh UI after generation completes so countdown changes are visible
-spindle.on('GENERATION_ENDED', () => {
-  sendStateToFrontend();
+spindle.on('GENERATION_ENDED', async () => {
+  await sendStateToFrontend();
 });
 
 // ===== Interceptor =====
@@ -524,5 +531,5 @@ spindle.registerInterceptor(async (messages, ctx) => {
   }
 
   spindle.log.info(`Mode Toggles initialized (chatId: ${currentChatId})`);
-  sendStateToFrontend();
+  await sendStateToFrontend();
 })();
