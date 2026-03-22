@@ -194,23 +194,11 @@ function getModesView(chatId: string): ModeView[] {
 }
 
 // ===== Frontend Communication =====
-async function sendStateToFrontend(): Promise<void> {
-  // Always check the actual active chat — events are unreliable
-  try {
-    const active = await (spindle as any).chats?.getActive(currentUserId);
-    spindle.log.info(`[DIAG] getActive(${currentUserId}) returned: ${active ? active.id : 'null'}, currentChatId: ${currentChatId}`);
-    if (active?.id && active.id !== currentChatId) {
-      spindle.log.info(`[DIAG] Updating currentChatId: ${currentChatId} → ${active.id}`);
-      currentChatId = active.id;
-    }
-  } catch (e) {
-    spindle.log.warn(`[DIAG] getActive() FAILED: ${e} — using currentChatId: ${currentChatId}`);
-  }
-
+function sendStateToFrontend(): void {
   const chatStateKeys = Object.keys(config.chatStates);
   const thisState = config.chatStates[currentChatId] || {};
   const onModes = Object.entries(thisState).filter(([, s]) => s.status === 'ON').map(([n]) => n);
-  spindle.log.info(`[DIAG] Sending state for chatId: ${currentChatId}, chatStates has keys: [${chatStateKeys.join(', ')}], ON modes: [${onModes.join(', ')}]`);
+  spindle.log.info(`=> send chat=${currentChatId} on=[${onModes}]`);
 
   const view = getModesView(currentChatId);
   const activeCount = view.filter((m) => m.status === 'ON').length;
@@ -234,7 +222,7 @@ async function sendStateToFrontend(): Promise<void> {
 spindle.onFrontendMessage(async (payload: any, userId?: string) => {
   // Capture userId for operator-scoped extensions
   if (userId && userId !== currentUserId) {
-    spindle.log.info(`[DIAG] Captured userId from frontend: ${userId}`);
+    spindle.log.info(`=> user=${userId}`);
     currentUserId = userId;
 
     // First time we have a userId — try to resolve the real chatId
@@ -242,26 +230,26 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       try {
         const active = await (spindle as any).chats?.getActive(userId);
         if (active?.id) {
-          spindle.log.info(`[DIAG] First userId resolved chatId: ${active.id}`);
+          spindle.log.info(`=> resolved chat=${active.id}`);
           currentChatId = active.id;
         }
       } catch (e) {
-        spindle.log.warn(`[DIAG] getActive with userId failed: ${e}`);
+        spindle.log.warn(`=> getActive fail: ${e}`);
       }
     }
   }
-  spindle.log.info(`[DIAG] Frontend message: type=${payload.type}, payload.chatId=${payload.chatId || '(none)'}, currentChatId=${currentChatId}, userId=${currentUserId || '(none)'}`);
+  spindle.log.info(`<< ${payload.type} chat=${currentChatId}`);
   // The frontend always sends chatId with every message.
   // Use it as the source of truth for which chat we're operating on.
   if (payload.chatId && payload.chatId !== currentChatId) {
-    spindle.log.info(`[DIAG] Frontend updating chatId: ${currentChatId} → ${payload.chatId}`);
+    spindle.log.info(`=> chat: ${currentChatId} -> ${payload.chatId}`);
     currentChatId = payload.chatId;
   }
   const chatId = currentChatId;
 
   switch (payload.type) {
     case 'request_state':
-      await sendStateToFrontend();
+      sendStateToFrontend();
       break;
 
     case 'toggle_mode': {
@@ -269,21 +257,21 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       const state = getChatState(chatId);
       const curr = state[payload.modeName]?.status ?? 'OFF';
       const next = curr === 'ON' ? 'OFF' : 'ON';
-      spindle.log.info(`[DIAG] Toggle "${payload.modeName}": ${curr} → ${next}, chatId=${chatId}`);
+      spindle.log.info(`>> toggle "${payload.modeName}" ${curr}->${next} chat=${chatId}`);
       if (next === 'ON') {
         state[payload.modeName] = { status: 'ON', schedule: state[payload.modeName]?.schedule || 'X' };
       } else {
         state[payload.modeName] = { status: 'OFF', countdown: config.countdown, schedule: state[payload.modeName]?.schedule || 'X' };
       }
       await saveConfig();
-      await sendStateToFrontend();
+      sendStateToFrontend();
       break;
     }
 
     case 'set_enabled':
       config.enabled = payload.enabled;
       await saveConfig();
-      await sendStateToFrontend();
+      sendStateToFrontend();
       toast.info(config.enabled ? 'Mode Toggles enabled' : 'Mode Toggles disabled');
       break;
 
@@ -294,7 +282,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       if (payload.postFraming !== undefined) config.postFraming = payload.postFraming;
       if (payload.countdown !== undefined) config.countdown = payload.countdown;
       await saveConfig();
-      await sendStateToFrontend();
+      sendStateToFrontend();
       break;
 
     case 'add_edit_mode': {
@@ -316,7 +304,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         toast.success(`Mode "${payload.name}" saved`);
       }
       await saveConfig();
-      await sendStateToFrontend();
+      sendStateToFrontend();
       break;
     }
 
@@ -369,7 +357,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         imported++;
       }
       await saveConfig();
-      await sendStateToFrontend();
+      sendStateToFrontend();
       if (imported > 0) toast.success(`Imported ${imported} mode(s)`);
       if (errors > 0) toast.warning(`${errors} line(s) skipped due to format errors`);
       break;
@@ -394,7 +382,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         for (const name of toRemove) delete config.chatStates[chatId][name];
       }
       await saveConfig();
-      await sendStateToFrontend();
+      sendStateToFrontend();
       toast.success('All custom modes removed');
       break;
     }
@@ -407,7 +395,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         modeOverrides: {}, chatStates: {},
       };
       await saveConfig();
-      await sendStateToFrontend();
+      sendStateToFrontend();
       toast.success('Extension reset to defaults');
       break;
 
@@ -423,7 +411,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         }
       }
       await saveConfig();
-      await sendStateToFrontend();
+      sendStateToFrontend();
       if (count > 0) toast.success(`Disabled ${count} mode(s)`);
       else toast.info('No active modes to disable');
       break;
@@ -438,7 +426,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       const st = getChatState(chatId);
       st[pick.name] = { status: 'ON', schedule: st[pick.name]?.schedule || 'X' };
       await saveConfig();
-      await sendStateToFrontend();
+      sendStateToFrontend();
       toast.success(`Randomly activated: ${pick.name}`);
       break;
     }
@@ -452,7 +440,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         }
       }
       await saveConfig();
-      await sendStateToFrontend();
+      sendStateToFrontend();
       break;
     }
   }
@@ -461,41 +449,41 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
 // ===== Events =====
 spindle.on('CHAT_CHANGED', async (data: any) => {
   const newChatId = data?.chatId;
-  spindle.log.info(`[DIAG] CHAT_CHANGED event fired: newChatId=${newChatId || '(none)'}, currentChatId=${currentChatId}`);
+  spindle.log.info(`>> CHAT_CHANGED new=${newChatId || '-'} cur=${currentChatId}`);
 
   if (newChatId) {
     // Got a chatId directly from the event
     if (newChatId === currentChatId) return;
-    spindle.log.info(`[DIAG] CHAT_CHANGED updating: ${currentChatId} → ${newChatId}`);
+    spindle.log.info(`=> chat: ${currentChatId} -> ${newChatId}`);
     currentChatId = newChatId;
   } else if (currentUserId) {
     // No chatId in event (operator-scoped) — resolve via getActive
     try {
       const active = await (spindle as any).chats?.getActive(currentUserId);
       if (active?.id && active.id !== currentChatId) {
-        spindle.log.info(`[DIAG] CHAT_CHANGED resolved via getActive: ${currentChatId} → ${active.id}`);
+        spindle.log.info(`=> resolved: ${currentChatId} -> ${active.id}`);
         currentChatId = active.id;
       } else {
-        spindle.log.info(`[DIAG] CHAT_CHANGED: getActive returned same id or null`);
+        spindle.log.info(`=> same chat, skip`);
         return;
       }
     } catch (e) {
-      spindle.log.warn(`[DIAG] CHAT_CHANGED getActive failed: ${e}`);
+      spindle.log.warn(`=> CHANGED fail: ${e}`);
       return;
     }
   } else {
-    spindle.log.warn(`[DIAG] CHAT_CHANGED: no chatId and no userId — can't resolve`);
+    spindle.log.warn(`=> CHANGED: no user, skip`);
     return;
   }
 
   tick = 0;
-  await sendStateToFrontend();
+  sendStateToFrontend();
 });
 
 // Refresh UI after generation completes so countdown changes are visible
 spindle.on('GENERATION_ENDED', async () => {
-  spindle.log.info(`[DIAG] GENERATION_ENDED, currentChatId=${currentChatId}`);
-  await sendStateToFrontend();
+  spindle.log.info(`>> GEN_END chat=${currentChatId}`);
+  sendStateToFrontend();
 });
 
 // ===== Interceptor =====
@@ -574,19 +562,19 @@ spindle.registerInterceptor(async (messages, ctx) => {
   await loadCoreModesFromStorage();
 
   // Get the real active chatId immediately — don't start at 'default'
-  spindle.log.info(`[DIAG] Init: spindle.chats exists: ${!!(spindle as any).chats}, type: ${typeof (spindle as any).chats}`);
+  spindle.log.info(`init: chats=${!!(spindle as any).chats}`);
   try {
     const active = await (spindle as any).chats?.getActive(currentUserId);
-    spindle.log.info(`[DIAG] Init: getActive(${currentUserId}) returned: ${JSON.stringify(active ? { id: active.id, name: active.name } : null)}`);
+    spindle.log.info(`init: active=${active?.id || 'none'}`);
     if (active?.id) {
       currentChatId = active.id;
     } else {
-      spindle.log.warn(`[DIAG] Init: getActive() returned null/no id — staying at: ${currentChatId}`);
+      spindle.log.warn(`init: no active chat`);
     }
   } catch (e) {
-    spindle.log.warn(`[DIAG] Init: getActive() THREW: ${e}`);
+    spindle.log.warn(`init: getActive fail: ${e}`);
   }
 
-  spindle.log.info(`[DIAG] Init complete. currentChatId=${currentChatId}, chatStates keys: [${Object.keys(config.chatStates).join(', ')}]`);
-  await sendStateToFrontend();
+  spindle.log.info(`init done chat=${currentChatId}`);
+  sendStateToFrontend();
 })();
