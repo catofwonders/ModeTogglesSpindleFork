@@ -87,11 +87,12 @@ async function saveConfig(): Promise<void> {
 
 async function loadCoreModesFromStorage(): Promise<void> {
   const all: ModeDefinition[] = [];
+  const seen = new Set<string>();
   for (let n = 1; ; n++) {
     try {
       const text = await spindle.storage.read(`modes/modes_${n}.txt`);
       if (!text) break;
-      const lines = text.split('\n').map((l: string) => l.trim()).filter(Boolean);
+      const lines = text.replace(/\r/g, '').split('\n').map((l: string) => l.trim()).filter(Boolean);
       for (const line of lines) {
         const parts = line.split(' - ');
         const name = parts[0]?.trim();
@@ -106,6 +107,8 @@ async function loadCoreModesFromStorage(): Promise<void> {
           continue;
         }
         if (!name || !description) continue;
+        if (seen.has(name)) continue; // skip duplicates
+        seen.add(name);
         all.push({ name, group, description });
       }
     } catch {
@@ -236,7 +239,7 @@ spindle.onFrontendMessage(async (payload: any) => {
     }
 
     case 'import_modes': {
-      const lines = payload.text.split('\n').map((l: string) => l.trim()).filter(Boolean);
+      const lines = payload.text.replace(/\r/g, '').split('\n').map((l: string) => l.trim()).filter(Boolean);
       let imported = 0;
       let errors = 0;
       for (const line of lines) {
@@ -251,7 +254,7 @@ spindle.onFrontendMessage(async (payload: any) => {
           description = (parts[1] || '').trim();
         } else { errors++; continue; }
         if (!name || !description) { errors++; continue; }
-        config.modeOverrides[name] = { description, group };
+        config.modeOverrides[name] = { description, group: group || 'Unsorted' };
         imported++;
       }
       await saveConfig();
