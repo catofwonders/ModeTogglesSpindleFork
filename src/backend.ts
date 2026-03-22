@@ -92,8 +92,22 @@ async function loadCoreModesFromStorage(): Promise<void> {
     try {
       const text = await spindle.storage.read(`modes/modes_${n}.txt`);
       if (!text) break;
-      const lines = text.replace(/\r/g, '').split('\n').map((l: string) => l.trim()).filter(Boolean);
-      for (const line of lines) {
+
+      // Pre-process: join continuation lines
+      const rawLines = text.replace(/\r/g, '').split('\n');
+      const mergedLines: string[] = [];
+      for (const raw of rawLines) {
+        const trimmed = raw.trim();
+        if (!trimmed) continue;
+        const dashCount = (trimmed.match(/ - /g) || []).length;
+        if (dashCount >= 2) {
+          mergedLines.push(trimmed);
+        } else if (mergedLines.length > 0) {
+          mergedLines[mergedLines.length - 1] += ' ' + trimmed;
+        }
+      }
+
+      for (const line of mergedLines) {
         const parts = line.split(' - ');
         const name = parts[0]?.trim();
         let group: string, description: string;
@@ -107,7 +121,7 @@ async function loadCoreModesFromStorage(): Promise<void> {
           continue;
         }
         if (!name || !description) continue;
-        if (seen.has(name)) continue; // skip duplicates
+        if (seen.has(name)) continue;
         seen.add(name);
         all.push({ name, group, description });
       }
@@ -239,10 +253,29 @@ spindle.onFrontendMessage(async (payload: any) => {
     }
 
     case 'import_modes': {
-      const lines = payload.text.replace(/\r/g, '').split('\n').map((l: string) => l.trim()).filter(Boolean);
+      // Pre-process: join continuation lines. A valid entry starts with "Name - Group - Desc"
+      // (at least 2 " - " separators). Lines that don't match get appended to the previous entry.
+      const rawLines = payload.text.replace(/\r/g, '').split('\n');
+      const mergedLines: string[] = [];
+
+      for (const raw of rawLines) {
+        const trimmed = raw.trim();
+        if (!trimmed) continue; // skip blank lines
+
+        // Check if this looks like a new entry: must have at least 2 " - " separators
+        const dashCount = (trimmed.match(/ - /g) || []).length;
+        if (dashCount >= 2) {
+          mergedLines.push(trimmed);
+        } else if (mergedLines.length > 0) {
+          // Continuation of previous entry — append to its description
+          mergedLines[mergedLines.length - 1] += ' ' + trimmed;
+        }
+        // else: orphan line before any entry, skip
+      }
+
       let imported = 0;
       let errors = 0;
-      for (const line of lines) {
+      for (const line of mergedLines) {
         const parts = line.split(' - ');
         const name = parts[0]?.trim();
         let group: string, description: string;
