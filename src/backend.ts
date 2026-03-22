@@ -1,5 +1,14 @@
 declare const spindle: import('lumiverse-spindle-types').SpindleAPI;
 
+// ===== Safe Toast Helper =====
+// Guard in case spindle.toast isn't ready during early init
+const toast = {
+  info: (msg: string) => { spindle.toast?.info(msg) },
+  success: (msg: string) => { spindle.toast?.success(msg) },
+  warning: (msg: string) => { spindle.toast?.warning(msg) },
+  error: (msg: string) => { spindle.toast?.error(msg) },
+};
+
 // ===== Types =====
 interface ModeDefinition {
   name: string;
@@ -190,7 +199,7 @@ spindle.onFrontendMessage(async (payload: any) => {
       config.enabled = payload.enabled;
       await saveConfig();
       sendStateToFrontend();
-      spindle.toast.info(config.enabled ? 'Mode Toggles enabled' : 'Mode Toggles disabled');
+      toast.info(config.enabled ? 'Mode Toggles enabled' : 'Mode Toggles disabled');
       break;
 
     case 'update_settings':
@@ -213,13 +222,13 @@ spindle.onFrontendMessage(async (payload: any) => {
             delete config.chatStates[chatId][payload.name];
           }
         }
-        spindle.toast.success(`Mode "${payload.name}" override removed`);
+        toast.success(`Mode "${payload.name}" override removed`);
       } else {
         config.modeOverrides[payload.name] = {
           description: payload.description,
           group: payload.group || 'Unsorted',
         };
-        spindle.toast.success(`Mode "${payload.name}" saved`);
+        toast.success(`Mode "${payload.name}" saved`);
       }
       await saveConfig();
       sendStateToFrontend();
@@ -247,8 +256,8 @@ spindle.onFrontendMessage(async (payload: any) => {
       }
       await saveConfig();
       sendStateToFrontend();
-      if (imported > 0) spindle.toast.success(`Imported ${imported} mode(s)`);
-      if (errors > 0) spindle.toast.warning(`${errors} line(s) skipped due to format errors`);
+      if (imported > 0) toast.success(`Imported ${imported} mode(s)`);
+      if (errors > 0) toast.warning(`${errors} line(s) skipped due to format errors`);
       break;
     }
 
@@ -272,7 +281,7 @@ spindle.onFrontendMessage(async (payload: any) => {
       }
       await saveConfig();
       sendStateToFrontend();
-      spindle.toast.success('All custom modes removed');
+      toast.success('All custom modes removed');
       break;
     }
 
@@ -285,7 +294,7 @@ spindle.onFrontendMessage(async (payload: any) => {
       };
       await saveConfig();
       sendStateToFrontend();
-      spindle.toast.success('Extension reset to defaults');
+      toast.success('Extension reset to defaults');
       break;
 
     case 'disable_all': {
@@ -301,8 +310,8 @@ spindle.onFrontendMessage(async (payload: any) => {
       }
       await saveConfig();
       sendStateToFrontend();
-      if (count > 0) spindle.toast.success(`Disabled ${count} mode(s)`);
-      else spindle.toast.info('No active modes to disable');
+      if (count > 0) toast.success(`Disabled ${count} mode(s)`);
+      else toast.info('No active modes to disable');
       break;
     }
 
@@ -310,13 +319,13 @@ spindle.onFrontendMessage(async (payload: any) => {
       if (!config.enabled) return;
       const view = getModesView(currentChatId);
       const inactive = view.filter((m) => m.status === 'OFF');
-      if (inactive.length === 0) { spindle.toast.info('No inactive modes available'); return; }
+      if (inactive.length === 0) { toast.info('No inactive modes available'); return; }
       const pick = inactive[Math.floor(Math.random() * inactive.length)];
       const st = getChatState(currentChatId);
       st[pick.name] = { status: 'Activating', schedule: st[pick.name]?.schedule || 'X' };
       await saveConfig();
       sendStateToFrontend();
-      spindle.toast.success(`Randomly activated: ${pick.name}`);
+      toast.success(`Randomly activated: ${pick.name}`);
       break;
     }
 
@@ -343,7 +352,7 @@ spindle.on('CHAT_CHANGED', (data: any) => {
   const state = getChatState(currentChatId);
   const activeCount = Object.values(state).filter((s) => s.status === 'ON').length;
   if (activeCount > 0) {
-    spindle.toast.info(`Restored ${activeCount} active mode(s)`);
+    toast.info(`Restored ${activeCount} active mode(s)`);
   }
 });
 
@@ -410,7 +419,7 @@ spindle.registerInterceptor(async (messages, ctx) => {
     }
   }
 
-  if (removed.length) spindle.toast.info(`Cleared ${removed.length} mode(s) from memory`);
+  if (removed.length) toast.info(`Cleared ${removed.length} mode(s) from memory`);
 
   saveConfig();
   sendStateToFrontend();
