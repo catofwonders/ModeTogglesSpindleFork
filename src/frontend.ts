@@ -39,6 +39,12 @@ export function setup(ctx: SpindleFrontendContext) {
   let accordionOpen: Record<string, boolean> = {};
   let tab: any = null;
   let toggleAction: any = null;
+  let currentChatId: string = '';
+
+  // Helper: send message to backend, always including chatId
+  function send(payload: Record<string, any>) {
+    ctx.sendToBackend({ ...payload, chatId: currentChatId });
+  }
 
   // ===== Styles =====
   ctx.dom.addStyle(`
@@ -126,6 +132,8 @@ export function setup(ctx: SpindleFrontendContext) {
   ctx.onBackendMessage((payload: any) => {
     if (payload.type === 'state_update') {
       state = payload as StateUpdate;
+      // Always sync chatId from backend
+      if (state.chatId) currentChatId = state.chatId;
       updateBadge();
       renderSettingsTab();
       if (activePopover && document.body.contains(activePopover)) {
@@ -145,8 +153,23 @@ export function setup(ctx: SpindleFrontendContext) {
     }
   });
 
+  // ===== Frontend-side CHAT_CHANGED =====
+  // When the user switches chats, tell the backend immediately so it sends
+  // the correct state — don't wait for the backend's own CHAT_CHANGED.
+  try {
+    (ctx as any).on('CHAT_CHANGED', (data: any) => {
+      const newId = data?.chatId;
+      if (newId && newId !== currentChatId) {
+        currentChatId = newId;
+        send({ type: 'request_state' });
+      }
+    });
+  } catch {
+    // ctx.on may not exist on all Lumiverse versions — backend events are the fallback
+  }
+
   // Request initial state
-  ctx.sendToBackend({ type: 'request_state' });
+  send({ type: 'request_state' });
 
   // ===== Active popover tracking =====
   let activePopover: HTMLElement | null = null;
@@ -183,7 +206,7 @@ export function setup(ctx: SpindleFrontendContext) {
     enableCb.type = 'checkbox';
     enableCb.checked = state.enabled;
     enableCb.addEventListener('change', () =>
-      ctx.sendToBackend({ type: 'set_enabled', enabled: enableCb.checked }));
+      send({ type: 'set_enabled', enabled: enableCb.checked }));
     enableLabel.append(enableCb, document.createTextNode(' Enable Mode Toggles'));
     container.appendChild(enableLabel);
 
@@ -201,27 +224,27 @@ export function setup(ctx: SpindleFrontendContext) {
     coreCb.type = 'checkbox';
     coreCb.checked = state.settings.loadCoreModes;
     coreCb.addEventListener('change', () =>
-      ctx.sendToBackend({ type: 'update_settings', loadCoreModes: coreCb.checked }));
+      send({ type: 'update_settings', loadCoreModes: coreCb.checked }));
     coreLabel.append(coreCb, document.createTextNode(' Load Core (Default) Modes'));
     container.appendChild(coreLabel);
 
     // Pre-framing
     container.appendChild(
       labeledTextarea('Text before mode content', state.settings.preFraming, (val) =>
-        ctx.sendToBackend({ type: 'update_settings', preFraming: val }))
+        send({ type: 'update_settings', preFraming: val }))
     );
 
     // Merge format
     container.appendChild(
       labeledTextarea('Merge format ({{modeName}}, {{displayStatus}}, {{modeDescription}})',
         state.settings.mergeFormat, (val) =>
-          ctx.sendToBackend({ type: 'update_settings', mergeFormat: val }))
+          send({ type: 'update_settings', mergeFormat: val }))
     );
 
     // Post-framing
     container.appendChild(
       labeledTextarea('Text after mode content', state.settings.postFraming, (val) =>
-        ctx.sendToBackend({ type: 'update_settings', postFraming: val }))
+        send({ type: 'update_settings', postFraming: val }))
     );
 
     // Countdown
@@ -235,7 +258,7 @@ export function setup(ctx: SpindleFrontendContext) {
     countInput.value = String(state.settings.countdown);
     countInput.min = '0';
     countInput.addEventListener('change', () =>
-      ctx.sendToBackend({ type: 'update_settings', countdown: parseInt(countInput.value) || 5 }));
+      send({ type: 'update_settings', countdown: parseInt(countInput.value) || 5 }));
     countSection.append(countLbl, countInput);
     container.appendChild(countSection);
 
@@ -246,14 +269,14 @@ export function setup(ctx: SpindleFrontendContext) {
     removeBtn.textContent = 'Remove All Custom Modes';
     removeBtn.addEventListener('click', () => {
       if (confirm('Remove all custom modes? Default modes will remain.'))
-        ctx.sendToBackend({ type: 'remove_all_custom' });
+        send({ type: 'remove_all_custom' });
     });
     const resetBtn = document.createElement('button');
     resetBtn.className = 'mt-btn';
     resetBtn.textContent = 'Reset to Defaults';
     resetBtn.addEventListener('click', () => {
       if (confirm('Reset all settings, custom modes, and per-chat states?'))
-        ctx.sendToBackend({ type: 'reset_defaults' });
+        send({ type: 'reset_defaults' });
     });
     btnRow.append(removeBtn, resetBtn);
     container.appendChild(btnRow);
@@ -364,16 +387,16 @@ export function setup(ctx: SpindleFrontendContext) {
     row1.style.cssText = 'display:flex;gap:3px;padding:2px 4px;';
     row1.appendChild(actionBtn('+ Add/Edit', 'mt-action-add', showAddEditPrompt));
     row1.appendChild(actionBtn('Export', 'mt-action-export', () =>
-      ctx.sendToBackend({ type: 'export_modes' })));
+      send({ type: 'export_modes' })));
     row1.appendChild(actionBtn('Import', 'mt-action-import', doImport));
     container.appendChild(row1);
 
     const row2 = mkEl('div');
     row2.style.cssText = 'display:flex;gap:3px;padding:2px 4px 4px;';
     row2.appendChild(actionBtn('Disable All', 'mt-action-disable', () =>
-      ctx.sendToBackend({ type: 'disable_all' })));
+      send({ type: 'disable_all' })));
     row2.appendChild(actionBtn('Random', 'mt-action-random', () =>
-      ctx.sendToBackend({ type: 'activate_random' })));
+      send({ type: 'activate_random' })));
     row2.appendChild(actionBtn('Schedule', 'mt-action-schedule', showScheduleDialog));
     container.appendChild(row2);
   }
@@ -420,7 +443,7 @@ export function setup(ctx: SpindleFrontendContext) {
     descDiv.textContent = mode.description;
     btn.append(nameDiv, descDiv);
     btn.addEventListener('click', () =>
-      ctx.sendToBackend({ type: 'toggle_mode', modeName: mode.name }));
+      send({ type: 'toggle_mode', modeName: mode.name }));
     return btn;
   }
 
@@ -446,7 +469,7 @@ export function setup(ctx: SpindleFrontendContext) {
       description = '';
     }
     if (!name) return;
-    ctx.sendToBackend({ type: 'add_edit_mode', name, group, description });
+    send({ type: 'add_edit_mode', name, group, description });
   }
 
   async function doImport() {
@@ -458,7 +481,7 @@ export function setup(ctx: SpindleFrontendContext) {
       if (files.length > 0) {
         const text = new TextDecoder().decode(files[0].bytes);
         if (text.trim()) {
-          ctx.sendToBackend({ type: 'import_modes', text });
+          send({ type: 'import_modes', text });
         }
       }
     } catch (e) {
@@ -537,7 +560,7 @@ export function setup(ctx: SpindleFrontendContext) {
     saveBtn.addEventListener('click', () => {
       const schedules: Record<string, string> = {};
       for (const { name, input } of inputs) schedules[name] = input.value || 'X';
-      ctx.sendToBackend({ type: 'update_schedules', schedules });
+      send({ type: 'update_schedules', schedules });
       overlay.remove();
     });
     btnRow.append(cancelBtn, saveBtn);

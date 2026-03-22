@@ -198,6 +198,14 @@ function sendStateToFrontend(): void {
 
 // ===== Message Handler from Frontend =====
 spindle.onFrontendMessage(async (payload: any) => {
+  // The frontend always sends chatId with every message.
+  // Use it as the source of truth for which chat we're operating on.
+  if (payload.chatId && payload.chatId !== currentChatId) {
+    spindle.log.info(`Frontend says chatId: ${currentChatId} → ${payload.chatId}`);
+    currentChatId = payload.chatId;
+  }
+  const chatId = currentChatId;
+
   switch (payload.type) {
     case 'request_state':
       sendStateToFrontend();
@@ -205,7 +213,7 @@ spindle.onFrontendMessage(async (payload: any) => {
 
     case 'toggle_mode': {
       if (!config.enabled) return;
-      const state = getChatState(currentChatId);
+      const state = getChatState(chatId);
       const curr = state[payload.modeName]?.status ?? 'OFF';
       let next: ModeState['status'];
       switch (curr) {
@@ -354,7 +362,7 @@ spindle.onFrontendMessage(async (payload: any) => {
 
     case 'disable_all': {
       if (!config.enabled) return;
-      const st = getChatState(currentChatId);
+      const st = getChatState(chatId);
       let count = 0;
       for (const [, s] of Object.entries(st)) {
         if (s.status === 'ON' || s.status === 'Activating' || s.status === 'Deactivating') {
@@ -372,11 +380,11 @@ spindle.onFrontendMessage(async (payload: any) => {
 
     case 'activate_random': {
       if (!config.enabled) return;
-      const view = getModesView(currentChatId);
+      const view = getModesView(chatId);
       const inactive = view.filter((m) => m.status === 'OFF');
       if (inactive.length === 0) { toast.info('No inactive modes available'); return; }
       const pick = inactive[Math.floor(Math.random() * inactive.length)];
-      const st = getChatState(currentChatId);
+      const st = getChatState(chatId);
       st[pick.name] = { status: 'Activating', schedule: st[pick.name]?.schedule || 'X' };
       await saveConfig();
       sendStateToFrontend();
@@ -385,7 +393,7 @@ spindle.onFrontendMessage(async (payload: any) => {
     }
 
     case 'update_schedules': {
-      const st = getChatState(currentChatId);
+      const st = getChatState(chatId);
       for (const [modeName, schedule] of Object.entries(payload.schedules as Record<string, string>)) {
         if (st[modeName]) {
           let val = schedule.toUpperCase().replace(/[^\-X0-9]/g, '');
@@ -402,41 +410,12 @@ spindle.onFrontendMessage(async (payload: any) => {
 // ===== Events =====
 spindle.on('CHAT_CHANGED', (data: any) => {
   const newChatId = data?.chatId;
-  if (!newChatId) {
-    spindle.log.warn(`CHAT_CHANGED fired with no chatId — keeping: ${currentChatId}`);
-    return;
-  }
-  if (newChatId === currentChatId) {
-    sendStateToFrontend();
-    return;
-  }
-
-  const oldChatId = currentChatId;
-  spindle.log.info(`CHAT_CHANGED: ${oldChatId} → ${newChatId}`);
-
-  // If modes were toggled while chatId was still 'default', migrate that state
-  // to the first real chatId we see so it doesn't get orphaned.
-  if (oldChatId === 'default' && config.chatStates['default']) {
-    const defaultState = config.chatStates['default'];
-    const hasActiveState = Object.values(defaultState).some(
-      (s) => s.status !== 'OFF' || s.countdown !== undefined
-    );
-    if (hasActiveState && !config.chatStates[newChatId]) {
-      spindle.log.info(`Migrating ${Object.keys(defaultState).length} mode state(s) from 'default' → ${newChatId}`);
-      config.chatStates[newChatId] = defaultState;
-    }
-    delete config.chatStates['default'];
-    saveConfig();
-  }
-
+  if (!newChatId) return;
+  if (newChatId === currentChatId) return;
+  spindle.log.info(`CHAT_CHANGED: ${currentChatId} → ${newChatId}`);
   currentChatId = newChatId;
   tick = 0;
   sendStateToFrontend();
-  const state = getChatState(currentChatId);
-  const activeCount = Object.values(state).filter((s) => s.status === 'ON').length;
-  if (activeCount > 0) {
-    toast.info(`Restored ${activeCount} active mode(s)`);
-  }
 });
 
 // ===== Interceptor =====
@@ -447,22 +426,11 @@ spindle.permissions.onDenied(({ permission, operation }) => {
 spindle.registerInterceptor(async (messages, ctx) => {
   if (!config.enabled) return messages;
 
-  // Use the chatId from the generation context — this is the reliable source of truth.
-  // The global currentChatId can be stale if CHAT_CHANGED didn't fire or fired late.
+  // Use chatId from the generation context — this is the most reliable source
+  // since it's provided by Lumiverse at generation time.
   const chatId = (ctx as any)?.chatId || currentChatId || 'default';
   if (chatId !== currentChatId) {
     spindle.log.info(`Interceptor syncing chatId: ${currentChatId} → ${chatId}`);
-
-    // Migrate state from 'default' if it was set before we knew the real chatId
-    if (currentChatId === 'default' && chatId !== 'default' && config.chatStates['default']) {
-      const defaultState = config.chatStates['default'];
-      if (!config.chatStates[chatId]) {
-        spindle.log.info(`Interceptor migrating state from 'default' → ${chatId}`);
-        config.chatStates[chatId] = defaultState;
-      }
-      delete config.chatStates['default'];
-    }
-
     currentChatId = chatId;
   }
 
