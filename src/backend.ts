@@ -195,11 +195,6 @@ function getModesView(chatId: string): ModeView[] {
 
 // ===== Frontend Communication =====
 function sendStateToFrontend(): void {
-  const chatStateKeys = Object.keys(config.chatStates);
-  const thisState = config.chatStates[currentChatId] || {};
-  const onModes = Object.entries(thisState).filter(([, s]) => s.status === 'ON').map(([n]) => n);
-  spindle.log.info(`=> send chat=${currentChatId} on=[${onModes}]`);
-
   const view = getModesView(currentChatId);
   const activeCount = view.filter((m) => m.status === 'ON').length;
   spindle.sendToFrontend({
@@ -222,7 +217,6 @@ function sendStateToFrontend(): void {
 spindle.onFrontendMessage(async (payload: any, userId?: string) => {
   // Capture userId for operator-scoped extensions
   if (userId && userId !== currentUserId) {
-    spindle.log.info(`=> user=${userId}`);
     currentUserId = userId;
 
     // First time we have a userId — try to resolve the real chatId
@@ -230,19 +224,15 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       try {
         const active = await (spindle as any).chats?.getActive(userId);
         if (active?.id) {
-          spindle.log.info(`=> resolved chat=${active.id}`);
           currentChatId = active.id;
         }
-      } catch (e) {
-        spindle.log.warn(`=> getActive fail: ${e}`);
+      } catch {
       }
     }
   }
-  spindle.log.info(`<< ${payload.type} chat=${currentChatId}`);
   // The frontend always sends chatId with every message.
   // Use it as the source of truth for which chat we're operating on.
   if (payload.chatId && payload.chatId !== currentChatId) {
-    spindle.log.info(`=> chat: ${currentChatId} -> ${payload.chatId}`);
     currentChatId = payload.chatId;
   }
   const chatId = currentChatId;
@@ -254,7 +244,6 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         try {
           const active = await (spindle as any).chats?.getActive(currentUserId);
           if (active?.id && active.id !== currentChatId) {
-            spindle.log.info(`=> chat switch: ${currentChatId} -> ${active.id}`);
             currentChatId = active.id;
           }
         } catch { /* no chats permission */ }
@@ -268,7 +257,6 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       const state = getChatState(chatId);
       const curr = state[payload.modeName]?.status ?? 'OFF';
       const next = curr === 'ON' ? 'OFF' : 'ON';
-      spindle.log.info(`>> toggle "${payload.modeName}" ${curr}->${next} chat=${chatId}`);
       if (next === 'ON') {
         state[payload.modeName] = { status: 'ON', schedule: state[payload.modeName]?.schedule || 'X' };
       } else {
@@ -460,30 +448,22 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
 // ===== Events =====
 spindle.on('CHAT_CHANGED', async (data: any) => {
   const newChatId = data?.chatId;
-  spindle.log.info(`>> CHAT_CHANGED new=${newChatId || '-'} cur=${currentChatId}`);
 
   if (newChatId) {
-    // Got a chatId directly from the event
     if (newChatId === currentChatId) return;
-    spindle.log.info(`=> chat: ${currentChatId} -> ${newChatId}`);
     currentChatId = newChatId;
   } else if (currentUserId) {
-    // No chatId in event (operator-scoped) — resolve via getActive
     try {
       const active = await (spindle as any).chats?.getActive(currentUserId);
       if (active?.id && active.id !== currentChatId) {
-        spindle.log.info(`=> resolved: ${currentChatId} -> ${active.id}`);
         currentChatId = active.id;
       } else {
-        spindle.log.info(`=> same chat, skip`);
         return;
       }
-    } catch (e) {
-      spindle.log.warn(`=> CHANGED fail: ${e}`);
+    } catch {
       return;
     }
   } else {
-    spindle.log.warn(`=> CHANGED: no user, skip`);
     return;
   }
 
@@ -493,7 +473,6 @@ spindle.on('CHAT_CHANGED', async (data: any) => {
 
 // Refresh UI after generation completes so countdown changes are visible
 spindle.on('GENERATION_ENDED', async () => {
-  spindle.log.info(`>> GEN_END chat=${currentChatId}`);
   sendStateToFrontend();
 });
 
@@ -573,19 +552,14 @@ spindle.registerInterceptor(async (messages, ctx) => {
   await loadCoreModesFromStorage();
 
   // Get the real active chatId immediately — don't start at 'default'
-  spindle.log.info(`init: chats=${!!(spindle as any).chats}`);
   try {
     const active = await (spindle as any).chats?.getActive(currentUserId);
-    spindle.log.info(`init: active=${active?.id || 'none'}`);
     if (active?.id) {
       currentChatId = active.id;
-    } else {
-      spindle.log.warn(`init: no active chat`);
     }
-  } catch (e) {
-    spindle.log.warn(`init: getActive fail: ${e}`);
+  } catch {
+    // chats permission may not be granted — will resolve on first frontend message
   }
 
-  spindle.log.info(`init done chat=${currentChatId}`);
   sendStateToFrontend();
 })();
