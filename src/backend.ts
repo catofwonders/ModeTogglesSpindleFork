@@ -96,11 +96,19 @@ async function loadCoreModesFromStorage(): Promise<void> {
       // Pre-process: join continuation lines
       const rawLines = text.replace(/\r/g, '').split('\n');
       const mergedLines: string[] = [];
+
+      function looksLikeEntry(line: string): boolean {
+        const dc = (line.match(/ - /g) || []).length;
+        if (dc < 2) return false;
+        const g = (line.split(' - ')[1] || '').trim();
+        if (g.length > 40 || g.length === 0 || g.includes('{{') || g.includes(',')) return false;
+        return true;
+      }
+
       for (const raw of rawLines) {
         const trimmed = raw.trim();
         if (!trimmed) continue;
-        const dashCount = (trimmed.match(/ - /g) || []).length;
-        if (dashCount >= 2) {
+        if (looksLikeEntry(trimmed)) {
           mergedLines.push(trimmed);
         } else if (mergedLines.length > 0) {
           mergedLines[mergedLines.length - 1] += ' ' + trimmed;
@@ -254,23 +262,33 @@ spindle.onFrontendMessage(async (payload: any) => {
 
     case 'import_modes': {
       // Pre-process: join continuation lines. A valid entry starts with "Name - Group - Desc"
-      // (at least 2 " - " separators). Lines that don't match get appended to the previous entry.
+      // where Group is a short category name (e.g. "Social & Power", not a description fragment).
       const rawLines = payload.text.replace(/\r/g, '').split('\n');
       const mergedLines: string[] = [];
 
+      function looksLikeNewEntry(line: string): boolean {
+        const dashCount = (line.match(/ - /g) || []).length;
+        if (dashCount < 2) return false;
+        // Validate the group field (second part) looks like a real category
+        const parts = line.split(' - ');
+        const group = (parts[1] || '').trim();
+        // Real groups are short category names, not description fragments
+        if (group.length > 40) return false;
+        if (group.includes('{{')) return false;
+        if (group.includes(',')) return false;
+        if (group.length === 0) return false;
+        return true;
+      }
+
       for (const raw of rawLines) {
         const trimmed = raw.trim();
-        if (!trimmed) continue; // skip blank lines
+        if (!trimmed) continue;
 
-        // Check if this looks like a new entry: must have at least 2 " - " separators
-        const dashCount = (trimmed.match(/ - /g) || []).length;
-        if (dashCount >= 2) {
+        if (looksLikeNewEntry(trimmed)) {
           mergedLines.push(trimmed);
         } else if (mergedLines.length > 0) {
-          // Continuation of previous entry — append to its description
           mergedLines[mergedLines.length - 1] += ' ' + trimmed;
         }
-        // else: orphan line before any entry, skip
       }
 
       let imported = 0;
