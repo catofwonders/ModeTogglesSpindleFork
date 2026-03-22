@@ -263,8 +263,8 @@ export function setup(ctx: SpindleFrontendContext) {
     const popover = document.createElement('div');
     popover.style.cssText =
       'position:fixed;z-index:99999;max-width:400px;min-width:320px;max-height:500px;' +
-      'background:var(--lumiverse-fill,#1a1a1a);border:1px solid var(--lumiverse-border,#444);' +
-      'border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.5);overflow:hidden;' +
+      'background:var(--lumiverse-fill,#1a1a1a);opacity:1;border:1px solid var(--lumiverse-border,#444);' +
+      'border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,0.7);overflow:hidden;backdrop-filter:none;' +
       'bottom:80px;right:20px;';
 
     activePopover = popover;
@@ -290,7 +290,7 @@ export function setup(ctx: SpindleFrontendContext) {
 
     // Search header
     const header = document.createElement('div');
-    header.style.cssText = 'padding:8px;border-bottom:1px solid var(--lumiverse-border,#333);';
+    header.style.cssText = 'padding:8px;border-bottom:1px solid var(--lumiverse-border,#333);background:#1a1a1a;';
     const search = document.createElement('input') as HTMLInputElement;
     search.type = 'search';
     search.className = 'mt-search';
@@ -308,7 +308,7 @@ export function setup(ctx: SpindleFrontendContext) {
 
     // Mode list
     const listEl = document.createElement('div');
-    listEl.style.cssText = 'max-height:380px;overflow-y:auto;padding:4px;';
+    listEl.style.cssText = 'max-height:380px;overflow-y:auto;padding:4px;background:#1a1a1a;';
     renderModeList(listEl);
     container.appendChild(listEl);
 
