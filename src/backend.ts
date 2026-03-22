@@ -63,6 +63,7 @@ let config: Config = {
 let coreModes: ModeDefinition[] = [];
 let tick = 0;
 let currentChatId = 'default';
+let currentUserId: string | undefined;
 
 // ===== Storage Helpers =====
 async function loadConfig(): Promise<void> {
@@ -196,8 +197,8 @@ function getModesView(chatId: string): ModeView[] {
 async function sendStateToFrontend(): Promise<void> {
   // Always check the actual active chat — events are unreliable
   try {
-    const active = await (spindle as any).chats?.getActive();
-    spindle.log.info(`[DIAG] getActive() returned: ${active ? active.id : 'null'}, currentChatId: ${currentChatId}`);
+    const active = await (spindle as any).chats?.getActive(currentUserId);
+    spindle.log.info(`[DIAG] getActive(${currentUserId}) returned: ${active ? active.id : 'null'}, currentChatId: ${currentChatId}`);
     if (active?.id && active.id !== currentChatId) {
       spindle.log.info(`[DIAG] Updating currentChatId: ${currentChatId} → ${active.id}`);
       currentChatId = active.id;
@@ -230,8 +231,26 @@ async function sendStateToFrontend(): Promise<void> {
 }
 
 // ===== Message Handler from Frontend =====
-spindle.onFrontendMessage(async (payload: any) => {
-  spindle.log.info(`[DIAG] Frontend message: type=${payload.type}, payload.chatId=${payload.chatId || '(none)'}, currentChatId=${currentChatId}`);
+spindle.onFrontendMessage(async (payload: any, userId?: string) => {
+  // Capture userId for operator-scoped extensions
+  if (userId && userId !== currentUserId) {
+    spindle.log.info(`[DIAG] Captured userId from frontend: ${userId}`);
+    currentUserId = userId;
+
+    // First time we have a userId — try to resolve the real chatId
+    if (currentChatId === 'default') {
+      try {
+        const active = await (spindle as any).chats?.getActive(userId);
+        if (active?.id) {
+          spindle.log.info(`[DIAG] First userId resolved chatId: ${active.id}`);
+          currentChatId = active.id;
+        }
+      } catch (e) {
+        spindle.log.warn(`[DIAG] getActive with userId failed: ${e}`);
+      }
+    }
+  }
+  spindle.log.info(`[DIAG] Frontend message: type=${payload.type}, payload.chatId=${payload.chatId || '(none)'}, currentChatId=${currentChatId}, userId=${currentUserId || '(none)'}`);
   // The frontend always sends chatId with every message.
   // Use it as the source of truth for which chat we're operating on.
   if (payload.chatId && payload.chatId !== currentChatId) {
@@ -443,10 +462,32 @@ spindle.onFrontendMessage(async (payload: any) => {
 spindle.on('CHAT_CHANGED', async (data: any) => {
   const newChatId = data?.chatId;
   spindle.log.info(`[DIAG] CHAT_CHANGED event fired: newChatId=${newChatId || '(none)'}, currentChatId=${currentChatId}`);
-  if (!newChatId) return;
-  if (newChatId === currentChatId) return;
-  spindle.log.info(`[DIAG] CHAT_CHANGED updating: ${currentChatId} → ${newChatId}`);
-  currentChatId = newChatId;
+
+  if (newChatId) {
+    // Got a chatId directly from the event
+    if (newChatId === currentChatId) return;
+    spindle.log.info(`[DIAG] CHAT_CHANGED updating: ${currentChatId} → ${newChatId}`);
+    currentChatId = newChatId;
+  } else if (currentUserId) {
+    // No chatId in event (operator-scoped) — resolve via getActive
+    try {
+      const active = await (spindle as any).chats?.getActive(currentUserId);
+      if (active?.id && active.id !== currentChatId) {
+        spindle.log.info(`[DIAG] CHAT_CHANGED resolved via getActive: ${currentChatId} → ${active.id}`);
+        currentChatId = active.id;
+      } else {
+        spindle.log.info(`[DIAG] CHAT_CHANGED: getActive returned same id or null`);
+        return;
+      }
+    } catch (e) {
+      spindle.log.warn(`[DIAG] CHAT_CHANGED getActive failed: ${e}`);
+      return;
+    }
+  } else {
+    spindle.log.warn(`[DIAG] CHAT_CHANGED: no chatId and no userId — can't resolve`);
+    return;
+  }
+
   tick = 0;
   await sendStateToFrontend();
 });
@@ -535,8 +576,8 @@ spindle.registerInterceptor(async (messages, ctx) => {
   // Get the real active chatId immediately — don't start at 'default'
   spindle.log.info(`[DIAG] Init: spindle.chats exists: ${!!(spindle as any).chats}, type: ${typeof (spindle as any).chats}`);
   try {
-    const active = await (spindle as any).chats?.getActive();
-    spindle.log.info(`[DIAG] Init: getActive() returned: ${JSON.stringify(active ? { id: active.id, name: active.name } : null)}`);
+    const active = await (spindle as any).chats?.getActive(currentUserId);
+    spindle.log.info(`[DIAG] Init: getActive(${currentUserId}) returned: ${JSON.stringify(active ? { id: active.id, name: active.name } : null)}`);
     if (active?.id) {
       currentChatId = active.id;
     } else {
