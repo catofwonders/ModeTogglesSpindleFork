@@ -400,7 +400,18 @@ spindle.onFrontendMessage(async (payload: any) => {
 
 // ===== Events =====
 spindle.on('CHAT_CHANGED', (data: any) => {
-  currentChatId = data?.chatId || 'default';
+  const newChatId = data?.chatId;
+  if (!newChatId) {
+    spindle.log.warn(`CHAT_CHANGED fired with no chatId — keeping: ${currentChatId}`);
+    return;
+  }
+  if (newChatId === currentChatId) {
+    // Same chat, just refresh the UI
+    sendStateToFrontend();
+    return;
+  }
+  spindle.log.info(`CHAT_CHANGED: ${currentChatId} → ${newChatId}`);
+  currentChatId = newChatId;
   tick = 0;
   sendStateToFrontend();
   const state = getChatState(currentChatId);
@@ -418,8 +429,16 @@ spindle.permissions.onDenied(({ permission, operation }) => {
 spindle.registerInterceptor(async (messages, ctx) => {
   if (!config.enabled) return messages;
 
-  const state = getChatState(currentChatId);
-  const view = getModesView(currentChatId);
+  // Use the chatId from the generation context — this is the reliable source of truth.
+  // The global currentChatId can be stale if CHAT_CHANGED didn't fire or fired late.
+  const chatId = (ctx as any)?.chatId || currentChatId || 'default';
+  if (chatId !== currentChatId) {
+    spindle.log.info(`Interceptor syncing chatId: ${currentChatId} → ${chatId}`);
+    currentChatId = chatId;
+  }
+
+  const state = getChatState(chatId);
+  const view = getModesView(chatId);
 
   const modesToInclude = view.filter((m) => {
     const activeish = m.status === 'ON' || m.status === 'Activating' || m.status === 'Deactivating';
