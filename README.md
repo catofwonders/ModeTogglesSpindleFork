@@ -6,7 +6,7 @@ Toggle non-diegetic modifier modes that get injected into your prompts before th
 
 ## Features
 
-- **600+ built-in modes** across categories like Visual & Aesthetic, Genre & Cinematic, Social & Power, Temporal & Physics, and more
+- **210+ built-in modes** across categories like Visual & Aesthetic, Genre & Cinematic, Social & Power, Temporal & Physics, and more
 - **Per-chat state** — each chat remembers which modes are active
 - **Prompt interceptor** — active modes are prepended to your last message with configurable framing text
 - **Schedule masks** — control mode activation probability per message cycle (`X` = always, `5` = 50%, `-` = never)
@@ -20,7 +20,7 @@ Toggle non-diegetic modifier modes that get injected into your prompts before th
 Install via the Lumiverse Extensions panel or:
 ```
 POST /api/v1/spindle/install
-{ "github": "https://github.com/dfaker/mode-toggles-spindle" }
+{ "github": "https://github.com/catofwonders/ModeTogglesSpindleFork" }
 ```
 
 ### Manual Build
@@ -34,11 +34,12 @@ bun run build
 | Permission | Why |
 |---|---|
 | `interceptor` | Modifies the prompt before generation to inject active mode descriptions |
+| `chats` | Detects the active chat for per-chat mode scoping |
 
 ## Extension Structure
 
 ```
-mode-toggles-spindle/
+ModeTogglesSpindleFork/
 ├── spindle.json           # Extension manifest
 ├── src/
 │   ├── backend.ts         # Interceptor, storage, mode logic (Bun worker)
@@ -63,11 +64,12 @@ mode-toggles-spindle/
 - Loads core mode definitions from `modes/*.txt` in extension storage
 - Loads and persists config (settings, custom modes, per-chat states) in `config.json`
 - Registers a **prompt interceptor** that:
-  - Collects all active/transitioning modes
+  - Collects all active modes and modes in OFF countdown
   - Applies schedule probability masks
   - Builds a formatted prefix block and prepends it to the last user message
-  - Advances mode state transitions (Activating→ON, Deactivating→OFF→countdown→removed)
+  - Ticks down OFF countdowns and removes expired modes
 - Handles all frontend messages (toggle, settings, import/export, etc.)
+- Uses `spindle.chats.getActive()` to track the active chat for operator-scoped installs
 
 ### Frontend (`src/frontend.ts`)
 - Registers a **Drawer Tab** ("Mode Toggles") for extension settings (enable/disable, framing text, merge format, countdown, reset)
@@ -75,6 +77,7 @@ mode-toggles-spindle/
   - Search bar to filter modes by name, group, or description
   - Accordion-grouped mode buttons with color-coded status
   - Add/Edit, Import, Export, Disable All, Random Activate, and Schedule actions
+- Re-requests state when opening the popover or drawer tab to detect chat switches
 
 ## Mode Format
 
@@ -102,9 +105,9 @@ Examples:
 
 ## Credits
 
-Original SillyTavern extension by [depFA](https://github.com/dfaker).
-Spindle port maintains full feature parity with the original.
+Original SillyTavern extension by [dfaker](https://github.com/dfaker).
+Spindle port by [catofwonders](https://github.com/catofwonders).
 
 ## License
 
-MIT
+MIT — see [LICENSE.txt](LICENSE.txt)
