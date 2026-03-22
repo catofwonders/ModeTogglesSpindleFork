@@ -197,10 +197,19 @@ async function sendStateToFrontend(): Promise<void> {
   // Always check the actual active chat — events are unreliable
   try {
     const active = await (spindle as any).chats?.getActive();
+    spindle.log.info(`[DIAG] getActive() returned: ${active ? active.id : 'null'}, currentChatId: ${currentChatId}`);
     if (active?.id && active.id !== currentChatId) {
+      spindle.log.info(`[DIAG] Updating currentChatId: ${currentChatId} → ${active.id}`);
       currentChatId = active.id;
     }
-  } catch { /* chats permission may not be granted — use whatever currentChatId is */ }
+  } catch (e) {
+    spindle.log.warn(`[DIAG] getActive() FAILED: ${e} — using currentChatId: ${currentChatId}`);
+  }
+
+  const chatStateKeys = Object.keys(config.chatStates);
+  const thisState = config.chatStates[currentChatId] || {};
+  const onModes = Object.entries(thisState).filter(([, s]) => s.status === 'ON').map(([n]) => n);
+  spindle.log.info(`[DIAG] Sending state for chatId: ${currentChatId}, chatStates has keys: [${chatStateKeys.join(', ')}], ON modes: [${onModes.join(', ')}]`);
 
   const view = getModesView(currentChatId);
   const activeCount = view.filter((m) => m.status === 'ON').length;
@@ -222,10 +231,11 @@ async function sendStateToFrontend(): Promise<void> {
 
 // ===== Message Handler from Frontend =====
 spindle.onFrontendMessage(async (payload: any) => {
+  spindle.log.info(`[DIAG] Frontend message: type=${payload.type}, payload.chatId=${payload.chatId || '(none)'}, currentChatId=${currentChatId}`);
   // The frontend always sends chatId with every message.
   // Use it as the source of truth for which chat we're operating on.
   if (payload.chatId && payload.chatId !== currentChatId) {
-    spindle.log.info(`Frontend says chatId: ${currentChatId} → ${payload.chatId}`);
+    spindle.log.info(`[DIAG] Frontend updating chatId: ${currentChatId} → ${payload.chatId}`);
     currentChatId = payload.chatId;
   }
   const chatId = currentChatId;
@@ -240,10 +250,10 @@ spindle.onFrontendMessage(async (payload: any) => {
       const state = getChatState(chatId);
       const curr = state[payload.modeName]?.status ?? 'OFF';
       const next = curr === 'ON' ? 'OFF' : 'ON';
+      spindle.log.info(`[DIAG] Toggle "${payload.modeName}": ${curr} → ${next}, chatId=${chatId}`);
       if (next === 'ON') {
         state[payload.modeName] = { status: 'ON', schedule: state[payload.modeName]?.schedule || 'X' };
       } else {
-        // Turning off — start countdown for lingering in prompts
         state[payload.modeName] = { status: 'OFF', countdown: config.countdown, schedule: state[payload.modeName]?.schedule || 'X' };
       }
       await saveConfig();
@@ -432,8 +442,10 @@ spindle.onFrontendMessage(async (payload: any) => {
 // ===== Events =====
 spindle.on('CHAT_CHANGED', async (data: any) => {
   const newChatId = data?.chatId;
+  spindle.log.info(`[DIAG] CHAT_CHANGED event fired: newChatId=${newChatId || '(none)'}, currentChatId=${currentChatId}`);
   if (!newChatId) return;
   if (newChatId === currentChatId) return;
+  spindle.log.info(`[DIAG] CHAT_CHANGED updating: ${currentChatId} → ${newChatId}`);
   currentChatId = newChatId;
   tick = 0;
   await sendStateToFrontend();
@@ -441,6 +453,7 @@ spindle.on('CHAT_CHANGED', async (data: any) => {
 
 // Refresh UI after generation completes so countdown changes are visible
 spindle.on('GENERATION_ENDED', async () => {
+  spindle.log.info(`[DIAG] GENERATION_ENDED, currentChatId=${currentChatId}`);
   await sendStateToFrontend();
 });
 
@@ -520,16 +533,19 @@ spindle.registerInterceptor(async (messages, ctx) => {
   await loadCoreModesFromStorage();
 
   // Get the real active chatId immediately — don't start at 'default'
+  spindle.log.info(`[DIAG] Init: spindle.chats exists: ${!!(spindle as any).chats}, type: ${typeof (spindle as any).chats}`);
   try {
     const active = await (spindle as any).chats?.getActive();
+    spindle.log.info(`[DIAG] Init: getActive() returned: ${JSON.stringify(active ? { id: active.id, name: active.name } : null)}`);
     if (active?.id) {
-      spindle.log.info(`Init: active chat is ${active.id}`);
       currentChatId = active.id;
+    } else {
+      spindle.log.warn(`[DIAG] Init: getActive() returned null/no id — staying at: ${currentChatId}`);
     }
   } catch (e) {
-    spindle.log.warn(`Could not get active chat (chats permission may not be granted): ${e}`);
+    spindle.log.warn(`[DIAG] Init: getActive() THREW: ${e}`);
   }
 
-  spindle.log.info(`Mode Toggles initialized (chatId: ${currentChatId})`);
+  spindle.log.info(`[DIAG] Init complete. currentChatId=${currentChatId}, chatStates keys: [${Object.keys(config.chatStates).join(', ')}]`);
   await sendStateToFrontend();
 })();
