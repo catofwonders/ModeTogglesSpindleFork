@@ -64,7 +64,6 @@ let coreModes: ModeDefinition[] = [];
 let tick = 0;
 let currentChatId = 'default';
 let currentUserId: string | undefined;
-let hasCleanedUpOrphans = false;
 
 // ===== Storage Helpers =====
 async function loadConfig(): Promise<void> {
@@ -104,11 +103,11 @@ async function saveConfig(): Promise<void> {
 }
 
 async function cleanupOrphanedStates(userId?: string): Promise<void> {
-  if (hasCleanedUpOrphans) return;
-  hasCleanedUpOrphans = true;
-
   const chatIds = Object.keys(config.chatStates);
-  if (chatIds.length === 0) return;
+  if (chatIds.length === 0) {
+    toast.info('No chat states to clean up');
+    return;
+  }
 
   let removed = 0;
   for (const chatId of chatIds) {
@@ -122,7 +121,9 @@ async function cleanupOrphanedStates(userId?: string): Promise<void> {
   }
   if (removed > 0) {
     await saveConfig();
-    toast.info(`Cleaned up ${removed} orphaned chat state(s)`);
+    toast.success(`Cleaned up ${removed} orphaned chat state(s)`);
+  } else {
+    toast.info('All chat states are valid');
   }
 }
 
@@ -253,9 +254,6 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       } catch {
       }
     }
-
-    // Clean up states for deleted chats (runs once, non-blocking)
-    cleanupOrphanedStates(userId);
   }
   // The frontend always sends chatId with every message.
   // Use it as the source of truth for which chat we're operating on.
@@ -466,6 +464,12 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         }
       }
       await saveConfig();
+      sendStateToFrontend();
+      break;
+    }
+
+    case 'cleanup_orphans': {
+      await cleanupOrphanedStates(currentUserId);
       sendStateToFrontend();
       break;
     }
