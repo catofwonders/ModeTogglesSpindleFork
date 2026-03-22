@@ -432,6 +432,11 @@ spindle.on('CHAT_CHANGED', (data: any) => {
   sendStateToFrontend();
 });
 
+// Refresh UI after generation completes so countdown changes are visible
+spindle.on('GENERATION_ENDED', () => {
+  sendStateToFrontend();
+});
+
 // ===== Interceptor =====
 spindle.permissions.onDenied(({ permission, operation }) => {
   spindle.log.warn(`Permission "${permission}" denied for ${operation}`);
@@ -440,13 +445,10 @@ spindle.permissions.onDenied(({ permission, operation }) => {
 spindle.registerInterceptor(async (messages, ctx) => {
   if (!config.enabled) return messages;
 
-  // Use chatId from the generation context — this is the most reliable source
-  // since it's provided by Lumiverse at generation time.
-  const chatId = (ctx as any)?.chatId || currentChatId || 'default';
-  if (chatId !== currentChatId) {
-    spindle.log.info(`Interceptor syncing chatId: ${currentChatId} → ${chatId}`);
-    currentChatId = chatId;
-  }
+  // Use currentChatId — it's already kept in sync by the frontend (which sends chatId
+  // with every message) and by the CHAT_CHANGED event. Don't use ctx.chatId because
+  // it may be a different format/value and would overwrite the correct state.
+  const chatId = currentChatId || 'default';
 
   const state = getChatState(chatId);
   const view = getModesView(chatId);
@@ -502,7 +504,6 @@ spindle.registerInterceptor(async (messages, ctx) => {
   if (removed.length) toast.info(`Cleared ${removed.length} mode(s) from memory`);
 
   saveConfig();
-  sendStateToFrontend();
   return messages;
 });
 
@@ -510,6 +511,18 @@ spindle.registerInterceptor(async (messages, ctx) => {
 (async () => {
   await loadConfig();
   await loadCoreModesFromStorage();
-  spindle.log.info('Mode Toggles extension initialized');
+
+  // Get the real active chatId immediately — don't start at 'default'
+  try {
+    const active = await (spindle as any).chats?.getActive();
+    if (active?.id) {
+      spindle.log.info(`Init: active chat is ${active.id}`);
+      currentChatId = active.id;
+    }
+  } catch (e) {
+    spindle.log.warn(`Could not get active chat (chats permission may not be granted): ${e}`);
+  }
+
+  spindle.log.info(`Mode Toggles initialized (chatId: ${currentChatId})`);
   sendStateToFrontend();
 })();
