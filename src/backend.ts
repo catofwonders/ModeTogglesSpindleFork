@@ -64,6 +64,7 @@ let coreModes: ModeDefinition[] = [];
 let tick = 0;
 let currentChatId = 'default';
 let currentUserId: string | undefined;
+let hasCleanedUpOrphans = false;
 
 // ===== Storage Helpers =====
 async function loadConfig(): Promise<void> {
@@ -99,6 +100,29 @@ async function saveConfig(): Promise<void> {
     await spindle.storage.write('config.json', JSON.stringify(config, null, 2));
   } catch (e) {
     spindle.log.error(`Failed to save config: ${e}`);
+  }
+}
+
+async function cleanupOrphanedStates(userId?: string): Promise<void> {
+  if (hasCleanedUpOrphans) return;
+  hasCleanedUpOrphans = true;
+
+  const chatIds = Object.keys(config.chatStates);
+  if (chatIds.length === 0) return;
+
+  let removed = 0;
+  for (const chatId of chatIds) {
+    if (chatId === 'default') { delete config.chatStates[chatId]; removed++; continue; }
+    try {
+      const chat = await (spindle as any).chats?.get(chatId, userId);
+      if (!chat) { delete config.chatStates[chatId]; removed++; }
+    } catch {
+      // Can't verify — leave it alone
+    }
+  }
+  if (removed > 0) {
+    await saveConfig();
+    toast.info(`Cleaned up ${removed} orphaned chat state(s)`);
   }
 }
 
@@ -229,6 +253,9 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       } catch {
       }
     }
+
+    // Clean up states for deleted chats (runs once, non-blocking)
+    cleanupOrphanedStates(userId);
   }
   // The frontend always sends chatId with every message.
   // Use it as the source of truth for which chat we're operating on.
