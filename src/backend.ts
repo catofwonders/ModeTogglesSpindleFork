@@ -452,6 +452,17 @@ spindle.registerInterceptor(async (messages, ctx) => {
   const chatId = (ctx as any)?.chatId || currentChatId || 'default';
   if (chatId !== currentChatId) {
     spindle.log.info(`Interceptor syncing chatId: ${currentChatId} → ${chatId}`);
+
+    // Migrate state from 'default' if it was set before we knew the real chatId
+    if (currentChatId === 'default' && chatId !== 'default' && config.chatStates['default']) {
+      const defaultState = config.chatStates['default'];
+      if (!config.chatStates[chatId]) {
+        spindle.log.info(`Interceptor migrating state from 'default' → ${chatId}`);
+        config.chatStates[chatId] = defaultState;
+      }
+      delete config.chatStates['default'];
+    }
+
     currentChatId = chatId;
   }
 
