@@ -6,7 +6,7 @@
   "github": "https://github.com/dfaker/mode-toggles-spindle",
   "homepage": "https://github.com/dfaker/mode-toggles-spindle",
   "description": "Toggle non-diegetic modifier modes that get injected into your prompts. Modes can be grouped, scheduled, imported/exported, and configured per-chat.",
-  "permissions": ["interceptor"],
+  "permissions": ["interceptor", "chats"],
   "entry_backend": "dist/backend.js",
   "entry_frontend": "dist/frontend.js",
   "minimum_lumiverse_version": "0.1.0",
