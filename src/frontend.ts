@@ -115,6 +115,7 @@ export function setup(ctx: SpindleFrontendContext) {
     title: 'Mode Toggles',
     iconSvg: MICROCHIP_SVG,
   });
+  tab.onActivate(() => send({ type: 'request_state' }));
   renderSettingsTab();
 
   // ===== Input Bar Action: Quick Toggle Menu =====
@@ -274,6 +275,9 @@ export function setup(ctx: SpindleFrontendContext) {
       activePopover = null;
       return;
     }
+
+    // Ask backend for fresh state (detects chat switches)
+    send({ type: 'request_state' });
 
     const popover = document.createElement('div');
     popover.style.cssText =

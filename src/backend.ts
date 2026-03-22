@@ -248,9 +248,20 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
   const chatId = currentChatId;
 
   switch (payload.type) {
-    case 'request_state':
+    case 'request_state': {
+      // Check if user switched chats (CHAT_CHANGED doesn't fire for operator-scoped)
+      if (currentUserId) {
+        try {
+          const active = await (spindle as any).chats?.getActive(currentUserId);
+          if (active?.id && active.id !== currentChatId) {
+            spindle.log.info(`=> chat switch: ${currentChatId} -> ${active.id}`);
+            currentChatId = active.id;
+          }
+        } catch { /* no chats permission */ }
+      }
       sendStateToFrontend();
       break;
+    }
 
     case 'toggle_mode': {
       if (!config.enabled) return;
