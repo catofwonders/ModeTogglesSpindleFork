@@ -80,7 +80,9 @@ export function setup(ctx: SpindleFrontendContext) {
       border-bottom: 1px solid var(--lumiverse-border, #333);
       font-size: 12px; border-radius: var(--lumiverse-radius, 3px); margin-bottom: 2px; }
     .mt-mode-btn:hover { filter: brightness(1.2); }
-    .mt-mode-name { font-weight: 600; }
+    .mt-mode-name { font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+    .mt-mode-edit { opacity: 0.4; font-size: 11px; padding: 2px 6px; cursor: pointer; }
+    .mt-mode-edit:active { opacity: 1; }
     .mt-mode-desc { font-size: 11px; opacity: 0.8; margin-top: 2px; }
     .mt-mode-on { background: rgba(0,255,0,0.08); color: #90EE90; }
     .mt-mode-off { background: rgba(255,0,0,0.06); color: #FFB6C1; }
@@ -371,7 +373,7 @@ export function setup(ctx: SpindleFrontendContext) {
 
     const row1 = mkEl('div');
     row1.style.cssText = 'display:flex;gap:3px;padding:2px 4px;';
-    row1.appendChild(actionBtn('+ Add/Edit', 'mt-action-add', showAddEditPrompt));
+    row1.appendChild(actionBtn('+ Add New', 'mt-action-add', showAddEditPrompt));
     row1.appendChild(actionBtn('Export', 'mt-action-export', () =>
       send({ type: 'export_modes' })));
     row1.appendChild(actionBtn('Import', 'mt-action-import', doImport));
@@ -421,7 +423,17 @@ export function setup(ctx: SpindleFrontendContext) {
     btn.title = 'Click to toggle';
     const nameDiv = document.createElement('div');
     nameDiv.className = 'mt-mode-name';
-    nameDiv.textContent = `${mode.name} ${statusText}`;
+    const nameText = document.createElement('span');
+    nameText.textContent = `${mode.name} ${statusText}`;
+    const editIcon = document.createElement('span');
+    editIcon.className = 'mt-mode-edit';
+    editIcon.textContent = '✎';
+    editIcon.title = 'Edit mode';
+    editIcon.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showAddEditPrompt({ name: mode.name, group: mode.group, description: mode.description });
+    });
+    nameDiv.append(nameText, editIcon);
     const descDiv = document.createElement('div');
     descDiv.className = 'mt-mode-desc';
     descDiv.textContent = mode.description;
@@ -487,7 +499,7 @@ export function setup(ctx: SpindleFrontendContext) {
     document.body.appendChild(overlay);
   }
 
-  function showAddEditPrompt() {
+  function showAddEditPrompt(prefill?: { name: string; group: string; description: string }) {
     const overlay = document.createElement('div');
     overlay.className = 'mt-overlay';
     const modal = document.createElement('div');
@@ -495,7 +507,7 @@ export function setup(ctx: SpindleFrontendContext) {
 
     const title = document.createElement('h3');
     title.style.cssText = 'margin:0 0 12px';
-    title.textContent = 'Add / Edit Mode';
+    title.textContent = prefill ? 'Edit Mode' : 'Add Mode';
     modal.appendChild(title);
 
     const help = document.createElement('small');
@@ -510,6 +522,7 @@ export function setup(ctx: SpindleFrontendContext) {
     nameInput.type = 'text';
     nameInput.className = 'mt-search';
     nameInput.placeholder = 'Mode name';
+    if (prefill) { nameInput.value = prefill.name; nameInput.readOnly = true; nameInput.style.opacity = '0.6'; }
 
     const groupLabel = document.createElement('small');
     groupLabel.className = 'mt-small-label';
@@ -518,6 +531,7 @@ export function setup(ctx: SpindleFrontendContext) {
     groupInput.type = 'text';
     groupInput.className = 'mt-search';
     groupInput.placeholder = 'Unsorted';
+    if (prefill) groupInput.value = prefill.group;
 
     const descLabel = document.createElement('small');
     descLabel.className = 'mt-small-label';
@@ -526,6 +540,7 @@ export function setup(ctx: SpindleFrontendContext) {
     descInput.className = 'mt-textarea';
     descInput.rows = 3;
     descInput.placeholder = 'What this mode does...';
+    if (prefill) descInput.value = prefill.description;
 
     modal.append(nameLabel, nameInput, groupLabel, groupInput, descLabel, descInput);
 
@@ -552,7 +567,7 @@ export function setup(ctx: SpindleFrontendContext) {
     overlay.appendChild(modal);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
     document.body.appendChild(overlay);
-    setTimeout(() => nameInput.focus(), 50);
+    setTimeout(() => (prefill ? descInput : nameInput).focus(), 50);
   }
 
   async function doImport() {
