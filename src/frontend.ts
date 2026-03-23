@@ -558,6 +558,14 @@ export function setup(ctx: SpindleFrontendContext) {
       if (!name) return;
       const group = groupInput.value.trim() || 'Unsorted';
       const description = descInput.value.trim();
+      // When adding new, warn if name already exists
+      if (!prefill && state && state.modes.some((m) => m.name.toLowerCase() === name.toLowerCase())) {
+        showThemedConfirm(`A mode called "${name}" already exists. Overwrite it?`, () => {
+          send({ type: 'add_edit_mode', name, group, description });
+          overlay.remove();
+        });
+        return;
+      }
       send({ type: 'add_edit_mode', name, group, description });
       overlay.remove();
     });
