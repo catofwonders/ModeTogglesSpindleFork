@@ -2,7 +2,7 @@
   "version": "1.0.0",
   "name": "Mode Toggles",
   "identifier": "mode_toggles",
-  "author": "depFA",
+  "author": "catofwonders",
   "github": "https://github.com/catofwonders/ModeTogglesSpindleFork",
   "homepage": "https://github.com/catofwonders/ModeTogglesSpindleFork",
   "description": "Toggle non-diegetic modifier modes that get injected into your prompts. Modes can be grouped, scheduled, imported/exported, and configured per-chat.",
