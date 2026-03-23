@@ -252,15 +252,15 @@ export function setup(ctx: SpindleFrontendContext) {
     removeBtn.className = 'mt-btn';
     removeBtn.textContent = 'Remove All Custom Modes';
     removeBtn.addEventListener('click', () => {
-      if (confirm('Remove all custom modes? Default modes will remain.'))
-        send({ type: 'remove_all_custom' });
+      showThemedConfirm('Remove all custom modes? Default modes will remain.', () =>
+        send({ type: 'remove_all_custom' }));
     });
     const resetBtn = document.createElement('button');
     resetBtn.className = 'mt-btn';
     resetBtn.textContent = 'Reset to Defaults';
     resetBtn.addEventListener('click', () => {
-      if (confirm('Reset all settings, custom modes, and per-chat states?'))
-        send({ type: 'reset_defaults' });
+      showThemedConfirm('Reset all settings, custom modes, and per-chat states?', () =>
+        send({ type: 'reset_defaults' }));
     });
     btnRow.append(removeBtn, resetBtn);
     container.appendChild(btnRow);
@@ -432,28 +432,127 @@ export function setup(ctx: SpindleFrontendContext) {
   }
 
   // ===== Dialogs =====
+  function showThemedConfirm(message: string, onConfirm: () => void) {
+    const overlay = document.createElement('div');
+    overlay.className = 'mt-overlay';
+    const modal = document.createElement('div');
+    modal.className = 'mt-modal';
+
+    const msg = document.createElement('p');
+    msg.style.cssText = 'margin:0 0 16px';
+    msg.textContent = message;
+    modal.appendChild(msg);
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'mt-btn';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => overlay.remove());
+    const okBtn = document.createElement('button');
+    okBtn.className = 'mt-btn';
+    okBtn.style.background = 'rgba(255,0,0,0.15)';
+    okBtn.textContent = 'Confirm';
+    okBtn.addEventListener('click', () => { overlay.remove(); onConfirm(); });
+    btnRow.append(cancelBtn, okBtn);
+    modal.appendChild(btnRow);
+
+    overlay.appendChild(modal);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+  }
+
+  function showThemedAlert(message: string) {
+    const overlay = document.createElement('div');
+    overlay.className = 'mt-overlay';
+    const modal = document.createElement('div');
+    modal.className = 'mt-modal';
+
+    const msg = document.createElement('p');
+    msg.style.cssText = 'margin:0 0 16px';
+    msg.textContent = message;
+    modal.appendChild(msg);
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;justify-content:flex-end;';
+    const okBtn = document.createElement('button');
+    okBtn.className = 'mt-btn';
+    okBtn.textContent = 'OK';
+    okBtn.addEventListener('click', () => overlay.remove());
+    btnRow.appendChild(okBtn);
+    modal.appendChild(btnRow);
+
+    overlay.appendChild(modal);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+  }
+
   function showAddEditPrompt() {
-    const input = prompt(
-      'Enter: "Name - Group - Description"\n' +
-      'Or: "Name - Description" (group defaults to Unsorted)\n' +
-      'Leave description blank to remove a custom mode.'
-    );
-    if (!input) return;
-    const parts = input.split(' - ');
-    const name = (parts[0] || '').trim();
-    let group: string, description: string;
-    if (parts.length >= 3) {
-      group = (parts[1] || '').trim() || 'Unsorted';
-      description = parts.slice(2).join(' - ').trim();
-    } else if (parts.length === 2) {
-      group = 'Unsorted';
-      description = (parts[1] || '').trim();
-    } else {
-      group = 'Unsorted';
-      description = '';
-    }
-    if (!name) return;
-    send({ type: 'add_edit_mode', name, group, description });
+    const overlay = document.createElement('div');
+    overlay.className = 'mt-overlay';
+    const modal = document.createElement('div');
+    modal.className = 'mt-modal';
+
+    const title = document.createElement('h3');
+    title.style.cssText = 'margin:0 0 12px';
+    title.textContent = 'Add / Edit Mode';
+    modal.appendChild(title);
+
+    const help = document.createElement('small');
+    help.style.cssText = 'display:block;margin-bottom:12px;color:var(--lumiverse-text-muted,#999)';
+    help.textContent = 'Leave description blank to remove a custom mode override.';
+    modal.appendChild(help);
+
+    const nameLabel = document.createElement('small');
+    nameLabel.className = 'mt-small-label';
+    nameLabel.textContent = 'Name (required)';
+    const nameInput = document.createElement('input') as HTMLInputElement;
+    nameInput.type = 'text';
+    nameInput.className = 'mt-search';
+    nameInput.placeholder = 'Mode name';
+
+    const groupLabel = document.createElement('small');
+    groupLabel.className = 'mt-small-label';
+    groupLabel.textContent = 'Group';
+    const groupInput = document.createElement('input') as HTMLInputElement;
+    groupInput.type = 'text';
+    groupInput.className = 'mt-search';
+    groupInput.placeholder = 'Unsorted';
+
+    const descLabel = document.createElement('small');
+    descLabel.className = 'mt-small-label';
+    descLabel.textContent = 'Description';
+    const descInput = document.createElement('textarea') as HTMLTextAreaElement;
+    descInput.className = 'mt-textarea';
+    descInput.rows = 3;
+    descInput.placeholder = 'What this mode does...';
+
+    modal.append(nameLabel, nameInput, groupLabel, groupInput, descLabel, descInput);
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:12px;';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'mt-btn';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => overlay.remove());
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'mt-btn';
+    saveBtn.textContent = 'Save';
+    saveBtn.addEventListener('click', () => {
+      const name = nameInput.value.trim();
+      if (!name) return;
+      const group = groupInput.value.trim() || 'Unsorted';
+      const description = descInput.value.trim();
+      send({ type: 'add_edit_mode', name, group, description });
+      overlay.remove();
+    });
+    btnRow.append(cancelBtn, saveBtn);
+    modal.appendChild(btnRow);
+
+    overlay.appendChild(modal);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+    setTimeout(() => nameInput.focus(), 50);
   }
 
   async function doImport() {
@@ -479,7 +578,7 @@ export function setup(ctx: SpindleFrontendContext) {
       (m) => m.status === 'ON'
     );
     if (activeModes.length === 0) {
-      alert('No active modes to schedule.');
+      showThemedAlert('No active modes to schedule.');
       return;
     }
 
