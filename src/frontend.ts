@@ -98,7 +98,7 @@ export function setup(ctx: SpindleFrontendContext) {
 
     .mt-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100000;
       display: flex; align-items: center; justify-content: center; }
-    .mt-modal { background: var(--lumiverse-fill, #1a1a1a); border: 1px solid var(--lumiverse-border, #444);
+    .mt-modal { background: #1a1a1a; border: 1px solid var(--lumiverse-border, #444);
       border-radius: 8px; padding: 16px; max-width: 500px; width: 90%; max-height: 80vh; overflow-y: auto;
       color: var(--lumiverse-text, #ddd); }
     .mt-schedule-table { width: 100%; border-collapse: collapse; font-size: 12px; }
