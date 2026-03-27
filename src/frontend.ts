@@ -21,6 +21,8 @@ interface StateUpdate {
     mergeFormat: string;
     postFraming: string;
     countdown: number;
+    injectionPosition: string;
+    injectionRole: string;
   };
 }
 
@@ -59,6 +61,9 @@ export function setup(ctx: SpindleFrontendContext) {
     .mt-input { width: 80px; padding: 4px 6px; border-radius: var(--lumiverse-radius, 4px);
       border: 1px solid var(--lumiverse-border, #444); background: var(--lumiverse-fill-subtle, #222);
       color: var(--lumiverse-text, #ddd); font-family: inherit; }
+    .mt-select { padding: 4px 6px; border-radius: var(--lumiverse-radius, 4px);
+      border: 1px solid var(--lumiverse-border, #444); background: var(--lumiverse-fill-subtle, #222);
+      color: var(--lumiverse-text, #ddd); font-family: inherit; font-size: 12px; }
     .mt-btn { padding: 6px 12px; border-radius: var(--lumiverse-radius, 4px);
       border: 1px solid var(--lumiverse-border, #444); background: var(--lumiverse-fill-subtle, #333);
       color: var(--lumiverse-text, #ddd); cursor: pointer; font-size: 12px; }
@@ -247,6 +252,62 @@ export function setup(ctx: SpindleFrontendContext) {
       send({ type: 'update_settings', countdown: parseInt(countInput.value) || 5 }));
     countSection.append(countLbl, countInput);
     container.appendChild(countSection);
+
+    // Injection Position
+    const posSection = mkEl('div', 'mt-section');
+    const posLbl = document.createElement('small');
+    posLbl.className = 'mt-small-label';
+    posLbl.textContent = 'Injection position';
+    const posSelect = document.createElement('select') as HTMLSelectElement;
+    posSelect.className = 'mt-select';
+    const posOptions: [string, string][] = [
+      ['prepend', 'Prepend to user message'],
+      ['append', 'Append to user message'],
+      ['before_user', 'New message before user message'],
+      ['start', 'New message at start'],
+      ['end', 'New message at end'],
+    ];
+    for (const [val, label] of posOptions) {
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = label;
+      if (val === state.settings.injectionPosition) opt.selected = true;
+      posSelect.appendChild(opt);
+    }
+    posSection.append(posLbl, posSelect);
+    container.appendChild(posSection);
+
+    // Injection Role (only for positions that create a new message)
+    const roleSection = mkEl('div', 'mt-section');
+    const roleLbl = document.createElement('small');
+    roleLbl.className = 'mt-small-label';
+    roleLbl.textContent = 'Injected message role';
+    const roleSelect = document.createElement('select') as HTMLSelectElement;
+    roleSelect.className = 'mt-select';
+    const roleOptions: [string, string][] = [
+      ['system', 'System'],
+      ['user', 'User'],
+      ['assistant', 'Assistant'],
+    ];
+    for (const [val, label] of roleOptions) {
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = label;
+      if (val === state.settings.injectionRole) opt.selected = true;
+      roleSelect.appendChild(opt);
+    }
+    roleSelect.addEventListener('change', () =>
+      send({ type: 'update_settings', injectionRole: roleSelect.value }));
+    roleSection.append(roleLbl, roleSelect);
+
+    // Show/hide role based on position
+    const needsRole = (pos: string) => pos !== 'prepend' && pos !== 'append';
+    roleSection.style.display = needsRole(state.settings.injectionPosition) ? '' : 'none';
+    posSelect.addEventListener('change', () => {
+      send({ type: 'update_settings', injectionPosition: posSelect.value });
+      roleSection.style.display = needsRole(posSelect.value) ? '' : 'none';
+    });
+    container.appendChild(roleSection);
 
     // Buttons
     const btnRow = mkEl('div', 'mt-btn-row');

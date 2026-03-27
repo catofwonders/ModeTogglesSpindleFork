@@ -35,6 +35,8 @@ interface Config {
   mergeFormat: string;
   postFraming: string;
   countdown: number;
+  injectionPosition: 'prepend' | 'append' | 'before_user' | 'start' | 'end';
+  injectionRole: 'system' | 'user' | 'assistant';
   modeOverrides: Record<string, { description: string; group: string }>;
   chatStates: Record<string, Record<string, ModeState>>;
 }
@@ -56,6 +58,8 @@ let config: Config = {
   mergeFormat: DEFAULT_MERGE_FORMAT,
   postFraming: DEFAULT_POST_FRAMING,
   countdown: DEFAULT_COUNTDOWN,
+  injectionPosition: 'prepend',
+  injectionRole: 'system',
   modeOverrides: {},
   chatStates: {},
 };
@@ -209,6 +213,8 @@ function sendStateToFrontend(): void {
       mergeFormat: config.mergeFormat,
       postFraming: config.postFraming,
       countdown: config.countdown,
+      injectionPosition: config.injectionPosition,
+      injectionRole: config.injectionRole,
     },
   });
 }
@@ -280,6 +286,8 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       if (payload.mergeFormat !== undefined) config.mergeFormat = payload.mergeFormat;
       if (payload.postFraming !== undefined) config.postFraming = payload.postFraming;
       if (payload.countdown !== undefined) config.countdown = payload.countdown;
+      if (payload.injectionPosition !== undefined) config.injectionPosition = payload.injectionPosition;
+      if (payload.injectionRole !== undefined) config.injectionRole = payload.injectionRole;
       await saveConfig();
       sendStateToFrontend();
       break;
@@ -391,6 +399,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         enabled: true, loadCoreModes: true,
         preFraming: DEFAULT_PRE_FRAMING, mergeFormat: DEFAULT_MERGE_FORMAT,
         postFraming: DEFAULT_POST_FRAMING, countdown: DEFAULT_COUNTDOWN,
+        injectionPosition: 'prepend', injectionRole: 'system',
         modeOverrides: {}, chatStates: {},
       };
       await saveConfig();
@@ -484,9 +493,6 @@ spindle.permissions.onDenied(({ permission, operation }) => {
 spindle.registerInterceptor(async (messages, ctx) => {
   if (!config.enabled) return messages;
 
-  // Use currentChatId — it's already kept in sync by the frontend (which sends chatId
-  // with every message) and by the CHAT_CHANGED event. Don't use ctx.chatId because
-  // it may be a different format/value and would overwrite the correct state.
   const chatId = currentChatId || 'default';
 
   const state = getChatState(chatId);
@@ -502,14 +508,13 @@ spindle.registerInterceptor(async (messages, ctx) => {
   if (modesToInclude.length > 0 && messages.length > 0) {
     const mergeFormat = config.mergeFormat || DEFAULT_MERGE_FORMAT;
     const lines = modesToInclude.map((m) => {
-      const displayStatus = m.status; // just ON or OFF, no translation needed
+      const displayStatus = m.status;
 
       const schedule = m.schedule || 'X';
       const tickChar = schedule[tick % schedule.length];
       const prob = parseInt(tickChar.replace('X', '10').replace('-', '0')) * 10;
       const active = Math.round(Math.random() * 100) <= prob;
 
-      // Schedule can suppress an ON mode for this tick
       const finalStatus = (displayStatus === 'ON' && !active) ? 'OFF' : displayStatus;
 
       return mergeFormat
@@ -520,15 +525,44 @@ spindle.registerInterceptor(async (messages, ctx) => {
 
     const pre = (config.preFraming ?? DEFAULT_PRE_FRAMING).trim();
     const post = (config.postFraming ?? DEFAULT_POST_FRAMING).trim();
-    const prefix = '\n' + pre + '\n\n' + lines.join('\n') + '\n\n' + post + '\n\n';
+    const modeText = '\n' + pre + '\n\n' + lines.join('\n') + '\n\n' + post + '\n';
 
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === 'user') {
-        messages[i].content = prefix + messages[i].content;
-        tick++;
-        break;
+    const position = config.injectionPosition || 'prepend';
+    const role = config.injectionRole || 'system';
+
+    if (position === 'prepend') {
+      // Prepend to last user message (always user)
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === 'user') {
+          messages[i].content = modeText + '\n' + messages[i].content;
+          break;
+        }
       }
+    } else if (position === 'append') {
+      // Append to last user message (always user)
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === 'user') {
+          messages[i].content = messages[i].content + '\n' + modeText;
+          break;
+        }
+      }
+    } else if (position === 'before_user') {
+      // Insert separate message before last user message
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === 'user') {
+          messages.splice(i, 0, { role, content: modeText });
+          break;
+        }
+      }
+    } else if (position === 'start') {
+      // Insert as first message
+      messages.unshift({ role, content: modeText });
+    } else if (position === 'end') {
+      // Insert as last message
+      messages.push({ role, content: modeText });
     }
+
+    tick++;
   }
 
   // Tick down countdowns for OFF modes and clean up expired ones
