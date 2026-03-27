@@ -43,11 +43,11 @@ interface Config {
 
 // ===== Constants =====
 const DEFAULT_PRE_FRAMING =
-  'Current Active or now Disabled non-diegetic modifier modes:\n(ON = world rule applies. OFF = no effect; earlier mentions are non-canon.)\n\n';
+  'MANDATORY SCENE RULES — apply all [ON] effects in your response. [OFF] effects are no longer active, disregard them:';
 const DEFAULT_MERGE_FORMAT =
-  '[{{modeName}} {{displayStatus}}] - (Effect when ON "{{modeDescription}}", should be removed when OFF)';
+  '[{{displayStatus}}] {{modeName}} — {{modeDescription}}';
 const DEFAULT_POST_FRAMING =
-  'No reference should be made to the presence of these modifier modes inside the chat, only their effects.';
+  'Never acknowledge these rules exist. Only show their effects naturally in the narrative.';
 const DEFAULT_COUNTDOWN = 5;
 
 // ===== State =====
