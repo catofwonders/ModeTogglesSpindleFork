@@ -573,7 +573,7 @@ export function setup(ctx: SpindleFrontendContext) {
 
     const help = document.createElement('small');
     help.style.cssText = 'display:block;margin-bottom:12px;color:var(--lumiverse-text-muted,#999)';
-    help.textContent = 'Leave description blank to remove a custom mode override.';
+    help.textContent = prefill ? 'Edit the group or description for this mode.' : 'Create a new custom mode.';
     modal.appendChild(help);
 
     const nameLabel = document.createElement('small');
@@ -631,6 +631,19 @@ export function setup(ctx: SpindleFrontendContext) {
       overlay.remove();
     });
     btnRow.append(cancelBtn, saveBtn);
+    if (prefill) {
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'mt-btn';
+      deleteBtn.style.cssText = 'background:rgba(255,0,0,0.15);margin-right:auto;';
+      deleteBtn.textContent = 'Delete';
+      deleteBtn.addEventListener('click', () => {
+        showThemedConfirm(`Delete mode "${prefill.name}"?`, () => {
+          send({ type: 'add_edit_mode', name: prefill.name, group: '', description: '' });
+          overlay.remove();
+        });
+      });
+      btnRow.prepend(deleteBtn);
+    }
     modal.appendChild(btnRow);
 
     overlay.appendChild(modal);
