@@ -106,6 +106,24 @@ async function saveConfig(): Promise<void> {
   }
 }
 
+// ===== Chat Resolution =====
+// Always resolves via spindle.chats.getActive() as source of truth.
+// The frontend-supplied chatId and cached currentChatId are only fallbacks.
+async function resolveActiveChatId(hint?: string): Promise<string> {
+  try {
+    const chatsApi = (spindle as any).chats;
+    if (chatsApi?.getActive) {
+      const active = currentUserId
+        ? await chatsApi.getActive(currentUserId)
+        : await chatsApi.getActive();
+      if (active?.id) return active.id;
+    }
+  } catch {
+    // chats permission not granted — fall back
+  }
+  return hint || currentChatId;
+}
+
 async function loadCoreModesFromStorage(): Promise<void> {
   const all: ModeDefinition[] = [];
   const seen = new Set<string>();
@@ -222,38 +240,15 @@ function sendStateToFrontend(): void {
 // ===== Message Handler from Frontend =====
 spindle.onFrontendMessage(async (payload: any, userId?: string) => {
   // Capture userId for operator-scoped extensions
-  if (userId && userId !== currentUserId) {
-    currentUserId = userId;
+  if (userId && userId !== currentUserId) currentUserId = userId;
 
-    // First time we have a userId — try to resolve the real chatId
-    if (currentChatId === 'default') {
-      try {
-        const active = await (spindle as any).chats?.getActive(userId);
-        if (active?.id) {
-          currentChatId = active.id;
-        }
-      } catch {
-      }
-    }
-  }
-  // The frontend always sends chatId with every message.
-  // Use it as the source of truth for which chat we're operating on.
-  if (payload.chatId && payload.chatId !== currentChatId) {
-    currentChatId = payload.chatId;
-  }
-  const chatId = currentChatId;
+  // Authoritative chatId: getActive() > payload.chatId > cached currentChatId.
+  // This protects against stale frontend chatIds after rapid chat switches.
+  const chatId = await resolveActiveChatId(payload.chatId);
+  if (chatId !== currentChatId) currentChatId = chatId;
 
   switch (payload.type) {
     case 'request_state': {
-      // Check if user switched chats (CHAT_CHANGED doesn't fire for operator-scoped)
-      if (currentUserId) {
-        try {
-          const active = await (spindle as any).chats?.getActive(currentUserId);
-          if (active?.id && active.id !== currentChatId) {
-            currentChatId = active.id;
-          }
-        } catch { /* no chats permission */ }
-      }
       sendStateToFrontend();
       break;
     }
@@ -456,26 +451,9 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
 
 // ===== Events =====
 spindle.on('CHAT_CHANGED', async (data: any) => {
-  const newChatId = data?.chatId;
-
-  if (newChatId) {
-    if (newChatId === currentChatId) return;
-    currentChatId = newChatId;
-  } else if (currentUserId) {
-    try {
-      const active = await (spindle as any).chats?.getActive(currentUserId);
-      if (active?.id && active.id !== currentChatId) {
-        currentChatId = active.id;
-      } else {
-        return;
-      }
-    } catch {
-      return;
-    }
-  } else {
-    return;
-  }
-
+  const resolved = await resolveActiveChatId(data?.chatId);
+  if (resolved === currentChatId) return;
+  currentChatId = resolved;
   tick = 0;
   sendStateToFrontend();
 });
@@ -490,10 +468,13 @@ spindle.permissions.onDenied(({ permission, operation }) => {
   spindle.log.warn(`Permission "${permission}" denied for ${operation}`);
 });
 
-spindle.registerInterceptor(async (messages, ctx) => {
+spindle.registerInterceptor(async (messages, ctx: any) => {
   if (!config.enabled) return messages;
 
-  const chatId = currentChatId || 'default';
+  // Use generation context's chatId as source of truth; it's the actual chat
+  // this generation is for, regardless of any UI state drift.
+  const chatId = ctx?.chatId || currentChatId || 'default';
+  if (chatId !== currentChatId) currentChatId = chatId;
 
   const state = getChatState(chatId);
   const view = getModesView(chatId);
@@ -585,15 +566,8 @@ spindle.registerInterceptor(async (messages, ctx) => {
   await loadConfig();
   await loadCoreModesFromStorage();
 
-  // Get the real active chatId immediately — don't start at 'default'
-  try {
-    const active = await (spindle as any).chats?.getActive(currentUserId);
-    if (active?.id) {
-      currentChatId = active.id;
-    }
-  } catch {
-    // chats permission may not be granted — will resolve on first frontend message
-  }
+  // Resolve the real active chatId immediately
+  currentChatId = await resolveActiveChatId();
 
   sendStateToFrontend();
 })();

@@ -162,6 +162,17 @@ export function setup(ctx: SpindleFrontendContext) {
   // Request initial state
   send({ type: 'request_state' });
 
+  // Proactively sync on chat switches so the popover/tab UI reflects the new
+  // chat immediately, instead of waiting for a backend-driven state_update.
+  ctx.events.on('CHAT_CHANGED', (data: any) => {
+    const newId = data?.chatId;
+    if (newId && newId !== currentChatId) {
+      currentChatId = newId;
+    }
+    // Always ask backend for the fresh state — it will resolve via getActive()
+    send({ type: 'request_state' });
+  });
+
   // ===== Active popover tracking =====
   let activePopover: HTMLElement | null = null;
 
