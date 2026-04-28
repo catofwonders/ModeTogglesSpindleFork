@@ -39,6 +39,7 @@ interface Config {
   injectionRole: 'system' | 'user' | 'assistant';
   modeOverrides: Record<string, { description: string; group: string }>;
   chatStates: Record<string, Record<string, ModeState>>;
+  presets: Record<string, { name: string; modes: string[] }>;
 }
 
 // ===== Constants =====
@@ -62,6 +63,7 @@ let config: Config = {
   injectionRole: 'system',
   modeOverrides: {},
   chatStates: {},
+  presets: {},
 };
 
 let coreModes: ModeDefinition[] = [];
@@ -80,6 +82,9 @@ async function loadConfig(): Promise<void> {
   } catch (e) {
     spindle.log.warn('Could not load config, using defaults');
   }
+
+  // Backwards compat: ensure presets exists on old configs
+  if (!config.presets) config.presets = {};
 
   // Migrate: clean up stale transition states from older versions
   let dirty = false;
@@ -219,12 +224,16 @@ function getModesView(chatId: string): ModeView[] {
 function sendStateToFrontend(): void {
   const view = getModesView(currentChatId);
   const activeCount = view.filter((m) => m.status === 'ON').length;
+  const presets = Object.values(config.presets)
+    .map((p) => ({ name: p.name, count: p.modes.length }))
+    .sort((a, b) => a.name.localeCompare(b.name));
   spindle.sendToFrontend({
     type: 'state_update',
     enabled: config.enabled,
     modes: view,
     activeCount,
     chatId: currentChatId,
+    presets,
     settings: {
       loadCoreModes: config.loadCoreModes,
       preFraming: config.preFraming,
@@ -390,12 +399,14 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
     }
 
     case 'reset_defaults':
+      // Preserve user's presets — they represent meaningful work.
+      const preservedPresets = config.presets;
       config = {
         enabled: true, loadCoreModes: true,
         preFraming: DEFAULT_PRE_FRAMING, mergeFormat: DEFAULT_MERGE_FORMAT,
         postFraming: DEFAULT_POST_FRAMING, countdown: DEFAULT_COUNTDOWN,
         injectionPosition: 'prepend', injectionRole: 'system',
-        modeOverrides: {}, chatStates: {},
+        modeOverrides: {}, chatStates: {}, presets: preservedPresets,
       };
       await saveConfig();
       sendStateToFrontend();
@@ -444,6 +455,83 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       }
       await saveConfig();
       sendStateToFrontend();
+      break;
+    }
+
+    case 'save_preset': {
+      const name = (payload.name || '').trim();
+      if (!name) { toast.error('Preset name required'); return; }
+      const st = getChatState(chatId);
+      const onModes = Object.entries(st)
+        .filter(([, s]) => s.status === 'ON')
+        .map(([n]) => n);
+      if (onModes.length === 0) { toast.warning('No modes are active to save'); return; }
+      config.presets[name] = { name, modes: onModes };
+      await saveConfig();
+      sendStateToFrontend();
+      toast.success(`Preset "${name}" saved (${onModes.length} mode${onModes.length === 1 ? '' : 's'})`);
+      break;
+    }
+
+    case 'load_preset': {
+      if (!config.enabled) return;
+      const name = payload.name;
+      const mergeMode = payload.mergeMode === 'merge' ? 'merge' : 'replace';
+      const preset = config.presets[name];
+      if (!preset) { toast.error(`Preset "${name}" not found`); return; }
+
+      const st = getChatState(chatId);
+      const presetSet = new Set(preset.modes);
+
+      if (mergeMode === 'replace') {
+        // Turn OFF any currently-ON mode not in the preset
+        for (const [modeName, s] of Object.entries(st)) {
+          if (s.status === 'ON' && !presetSet.has(modeName)) {
+            s.status = 'OFF';
+            s.countdown = config.countdown;
+          }
+        }
+      }
+      // Turn ON all preset modes (preserves existing schedule if present)
+      let activated = 0;
+      for (const modeName of preset.modes) {
+        const prev = st[modeName];
+        const wasOn = prev?.status === 'ON';
+        st[modeName] = { status: 'ON', schedule: prev?.schedule || 'X' };
+        if (!wasOn) activated++;
+      }
+      await saveConfig();
+      sendStateToFrontend();
+      const verb = mergeMode === 'replace' ? 'Loaded' : 'Merged';
+      toast.success(`${verb} "${name}" — ${activated} mode${activated === 1 ? '' : 's'} activated`);
+      break;
+    }
+
+    case 'delete_preset': {
+      const name = payload.name;
+      if (!config.presets[name]) return;
+      delete config.presets[name];
+      await saveConfig();
+      sendStateToFrontend();
+      toast.success(`Preset "${name}" deleted`);
+      break;
+    }
+
+    case 'rename_preset': {
+      const oldName = payload.oldName;
+      const newName = (payload.newName || '').trim();
+      if (!newName || !config.presets[oldName]) return;
+      if (config.presets[newName] && oldName !== newName) {
+        toast.error(`Preset "${newName}" already exists`);
+        return;
+      }
+      const p = config.presets[oldName];
+      p.name = newName;
+      config.presets[newName] = p;
+      if (oldName !== newName) delete config.presets[oldName];
+      await saveConfig();
+      sendStateToFrontend();
+      toast.success(`Renamed to "${newName}"`);
       break;
     }
   }

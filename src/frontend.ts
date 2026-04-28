@@ -15,6 +15,7 @@ interface StateUpdate {
   modes: ModeView[];
   activeCount: number;
   chatId: string;
+  presets: Array<{ name: string; count: number }>;
   settings: {
     loadCoreModes: boolean;
     preFraming: string;
@@ -102,6 +103,19 @@ export function setup(ctx: SpindleFrontendContext) {
     .mt-action-disable { background: rgba(255,0,0,0.08); color: #FF6B6B; }
     .mt-action-random { background: rgba(128,0,128,0.08); color: #DA70D6; }
     .mt-action-schedule { background: rgba(137,112,218,0.08); color: #8970da; }
+    .mt-action-presets { background: rgba(255,215,0,0.08); color: #FFD700; }
+    .mt-preset-row { display: flex; align-items: center; gap: 8px; padding: 8px;
+      border-bottom: 1px solid var(--lumiverse-border, #333); }
+    .mt-preset-row:hover { background: rgba(255,255,255,0.03); }
+    .mt-preset-name { flex: 1; font-weight: 600; font-size: 13px; }
+    .mt-preset-count { font-size: 11px; color: var(--lumiverse-text-muted, #999); }
+    .mt-preset-btn { padding: 4px 8px; font-size: 11px; border-radius: 3px; cursor: pointer;
+      border: 1px solid var(--lumiverse-border, #444); background: var(--lumiverse-fill-subtle, #222);
+      color: var(--lumiverse-text, #ddd); }
+    .mt-preset-btn:hover { filter: brightness(1.3); }
+    .mt-preset-btn-load { background: rgba(0,128,0,0.12); color: #90EE90; border-color: rgba(0,128,0,0.3); }
+    .mt-preset-btn-merge { background: rgba(0,0,255,0.12); color: #87CEEB; border-color: rgba(0,0,255,0.3); }
+    .mt-preset-btn-delete { background: rgba(255,0,0,0.12); color: #FF6B6B; border-color: rgba(255,0,0,0.3); }
 
     .mt-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 100000;
       display: flex; align-items: center; justify-content: center; }
@@ -458,6 +472,7 @@ export function setup(ctx: SpindleFrontendContext) {
     row2.appendChild(actionBtn('Random', 'mt-action-random', () =>
       send({ type: 'activate_random' })));
     row2.appendChild(actionBtn('Schedule', 'mt-action-schedule', showScheduleDialog));
+    row2.appendChild(actionBtn('Presets', 'mt-action-presets', showPresetsDialog));
     container.appendChild(row2);
   }
 
@@ -760,6 +775,193 @@ export function setup(ctx: SpindleFrontendContext) {
     overlay.appendChild(modal);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
     document.body.appendChild(overlay);
+  }
+
+  // ===== Presets Dialog =====
+  function showPresetsDialog() {
+    if (!state) return;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'mt-overlay';
+    const modal = document.createElement('div');
+    modal.className = 'mt-modal';
+
+    const title = document.createElement('h3');
+    title.style.cssText = 'margin:0 0 8px';
+    title.textContent = 'Presets';
+    modal.appendChild(title);
+
+    const help = document.createElement('small');
+    help.style.cssText = 'display:block;margin-bottom:12px;color:var(--lumiverse-text-muted,#999)';
+    help.textContent = 'Save the current chat\u2019s active modes as a preset, or load one into this chat.';
+    modal.appendChild(help);
+
+    // Save section
+    const saveRow = document.createElement('div');
+    saveRow.style.cssText = 'display:flex;gap:6px;margin-bottom:12px;';
+    const saveInput = document.createElement('input') as HTMLInputElement;
+    saveInput.type = 'text';
+    saveInput.className = 'mt-search';
+    saveInput.placeholder = 'New preset name...';
+    saveInput.style.marginBottom = '0';
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'mt-btn';
+    saveBtn.textContent = 'Save current';
+    const activeCount = state.modes.filter((m) => m.status === 'ON').length;
+    if (activeCount === 0) {
+      saveBtn.disabled = true;
+      saveBtn.style.opacity = '0.4';
+      saveBtn.title = 'No modes currently active';
+    }
+    saveBtn.addEventListener('click', () => {
+      const name = saveInput.value.trim();
+      if (!name) { saveInput.focus(); return; }
+      const exists = state!.presets.some((p) => p.name === name);
+      const doSave = () => {
+        send({ type: 'save_preset', name });
+        overlay.remove();
+      };
+      if (exists) {
+        showThemedConfirm(`Preset "${name}" already exists. Overwrite?`, doSave);
+      } else {
+        doSave();
+      }
+    });
+    saveRow.append(saveInput, saveBtn);
+    saveInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') saveBtn.click();
+    });
+    modal.appendChild(saveRow);
+
+    // Separator
+    const sep = document.createElement('div');
+    sep.className = 'mt-separator';
+    modal.appendChild(sep);
+
+    // List section
+    const listWrap = document.createElement('div');
+    listWrap.style.cssText = 'max-height:50vh;overflow-y:auto;';
+    if (state.presets.length === 0) {
+      const empty = document.createElement('div');
+      empty.style.cssText = 'padding:16px;text-align:center;color:var(--lumiverse-text-muted,#999);font-size:12px;';
+      empty.textContent = 'No presets saved yet.';
+      listWrap.appendChild(empty);
+    } else {
+      for (const preset of state.presets) {
+        const row = document.createElement('div');
+        row.className = 'mt-preset-row';
+
+        const info = document.createElement('div');
+        info.style.cssText = 'flex:1;min-width:0;';
+        const nameEl = document.createElement('div');
+        nameEl.className = 'mt-preset-name';
+        nameEl.textContent = preset.name;
+        nameEl.title = 'Click to rename';
+        nameEl.style.cursor = 'pointer';
+        nameEl.addEventListener('click', () => {
+          showRenamePrompt(preset.name, (newName) => {
+            send({ type: 'rename_preset', oldName: preset.name, newName });
+            overlay.remove();
+          });
+        });
+        const countEl = document.createElement('div');
+        countEl.className = 'mt-preset-count';
+        countEl.textContent = `${preset.count} mode${preset.count === 1 ? '' : 's'}`;
+        info.append(nameEl, countEl);
+
+        const loadBtn = document.createElement('button');
+        loadBtn.className = 'mt-preset-btn mt-preset-btn-load';
+        loadBtn.textContent = 'Load';
+        loadBtn.title = 'Replace current ON modes with this preset';
+        loadBtn.addEventListener('click', () => {
+          send({ type: 'load_preset', name: preset.name, mergeMode: 'replace' });
+          overlay.remove();
+        });
+
+        const mergeBtn = document.createElement('button');
+        mergeBtn.className = 'mt-preset-btn mt-preset-btn-merge';
+        mergeBtn.textContent = 'Merge';
+        mergeBtn.title = 'Add preset\u2019s modes without disabling current ones';
+        mergeBtn.addEventListener('click', () => {
+          send({ type: 'load_preset', name: preset.name, mergeMode: 'merge' });
+          overlay.remove();
+        });
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'mt-preset-btn mt-preset-btn-delete';
+        delBtn.textContent = '\u2715';
+        delBtn.title = 'Delete preset';
+        delBtn.addEventListener('click', () => {
+          showThemedConfirm(`Delete preset "${preset.name}"?`, () => {
+            send({ type: 'delete_preset', name: preset.name });
+            overlay.remove();
+          });
+        });
+
+        row.append(info, loadBtn, mergeBtn, delBtn);
+        listWrap.appendChild(row);
+      }
+    }
+    modal.appendChild(listWrap);
+
+    // Close button
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:12px;';
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'mt-btn';
+    closeBtn.textContent = 'Close';
+    closeBtn.addEventListener('click', () => overlay.remove());
+    btnRow.append(closeBtn);
+    modal.appendChild(btnRow);
+
+    overlay.appendChild(modal);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+    setTimeout(() => saveInput.focus(), 50);
+  }
+
+  function showRenamePrompt(oldName: string, onRename: (newName: string) => void) {
+    const overlay = document.createElement('div');
+    overlay.className = 'mt-overlay';
+    const modal = document.createElement('div');
+    modal.className = 'mt-modal';
+    modal.style.maxWidth = '360px';
+
+    const title = document.createElement('h3');
+    title.style.cssText = 'margin:0 0 12px';
+    title.textContent = 'Rename Preset';
+    modal.appendChild(title);
+
+    const input = document.createElement('input') as HTMLInputElement;
+    input.type = 'text';
+    input.className = 'mt-search';
+    input.value = oldName;
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:12px;';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'mt-btn';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => overlay.remove());
+    const okBtn = document.createElement('button');
+    okBtn.className = 'mt-btn';
+    okBtn.textContent = 'Rename';
+    okBtn.addEventListener('click', () => {
+      const v = input.value.trim();
+      if (v && v !== oldName) onRename(v);
+      overlay.remove();
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') okBtn.click();
+      if (e.key === 'Escape') cancelBtn.click();
+    });
+    btnRow.append(cancelBtn, okBtn);
+
+    modal.append(input, btnRow);
+    overlay.appendChild(modal);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+    setTimeout(() => { input.focus(); input.select(); }, 50);
   }
 
   // ===== Helpers =====
