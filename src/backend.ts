@@ -132,10 +132,12 @@ async function resolveActiveChatId(hint?: string): Promise<string> {
 async function loadCoreModesFromStorage(): Promise<void> {
   const all: ModeDefinition[] = [];
   const seen = new Set<string>();
-  for (let n = 1; ; n++) {
+  let consecutiveMisses = 0;
+  for (let n = 1; consecutiveMisses < 5; n++) {
     try {
       const text = await spindle.storage.read(`modes/modes_${n}.txt`);
-      if (!text) break;
+      if (!text) { consecutiveMisses++; continue; }
+      consecutiveMisses = 0;
 
       // Pre-process: join continuation lines
       const rawLines = text.replace(/\r/g, '').split('\n');
@@ -178,7 +180,7 @@ async function loadCoreModesFromStorage(): Promise<void> {
         all.push({ name, group, description });
       }
     } catch {
-      break;
+      consecutiveMisses++;
     }
   }
   coreModes = all;
