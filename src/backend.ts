@@ -641,7 +641,21 @@ spindle.registerInterceptor(async (messages, ctx: any) => {
 
     const pre = (config.preFraming ?? DEFAULT_PRE_FRAMING).trim();
     const post = (config.postFraming ?? DEFAULT_POST_FRAMING).trim();
-    const modeText = '\n' + pre + '\n\n' + lines.join('\n') + '\n\n' + post + '\n';
+    let modeText = '\n' + pre + '\n\n' + lines.join('\n') + '\n\n' + post + '\n';
+
+    // Resolve Lumiverse macros ({{char}}, {{user}}, etc.) in the final text
+    try {
+      const macros = (spindle as any).macros;
+      if (macros?.resolve) {
+        const resolved = await macros.resolve(modeText, {
+          chatId,
+          characterId: ctx?.characterId,
+        });
+        if (resolved?.text) modeText = resolved.text;
+      }
+    } catch {
+      // macros API unavailable — inject unresolved
+    }
 
     const position = config.injectionPosition || 'prepend';
     const role = config.injectionRole || 'system';
