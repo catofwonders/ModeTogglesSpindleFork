@@ -384,6 +384,51 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       break;
     }
 
+    case 'export_config': {
+      // Export everything except chatStates (those are per-chat session data)
+      const exportObj = {
+        enabled: config.enabled,
+        loadCoreModes: config.loadCoreModes,
+        preFraming: config.preFraming,
+        mergeFormat: config.mergeFormat,
+        postFraming: config.postFraming,
+        countdown: config.countdown,
+        injectionPosition: config.injectionPosition,
+        injectionRole: config.injectionRole,
+        modeOverrides: config.modeOverrides,
+        presets: config.presets,
+      };
+      spindle.sendToFrontend({ type: 'export_config_data', json: JSON.stringify(exportObj, null, 2) });
+      break;
+    }
+
+    case 'import_config': {
+      const incoming = payload.config;
+      if (!incoming || typeof incoming !== 'object') {
+        toast.error('Invalid config file');
+        return;
+      }
+      // Selectively apply known fields, preserving chatStates
+      if (typeof incoming.enabled === 'boolean') config.enabled = incoming.enabled;
+      if (typeof incoming.loadCoreModes === 'boolean') config.loadCoreModes = incoming.loadCoreModes;
+      if (typeof incoming.preFraming === 'string') config.preFraming = incoming.preFraming;
+      if (typeof incoming.mergeFormat === 'string') config.mergeFormat = incoming.mergeFormat;
+      if (typeof incoming.postFraming === 'string') config.postFraming = incoming.postFraming;
+      if (typeof incoming.countdown === 'number') config.countdown = incoming.countdown;
+      if (typeof incoming.injectionPosition === 'string') config.injectionPosition = incoming.injectionPosition as any;
+      if (typeof incoming.injectionRole === 'string') config.injectionRole = incoming.injectionRole as any;
+      if (incoming.modeOverrides && typeof incoming.modeOverrides === 'object') {
+        config.modeOverrides = incoming.modeOverrides;
+      }
+      if (incoming.presets && typeof incoming.presets === 'object') {
+        config.presets = incoming.presets;
+      }
+      await saveConfig();
+      sendStateToFrontend();
+      toast.success('Config imported successfully');
+      break;
+    }
+
     case 'remove_all_custom': {
       const defaultNames = new Set(coreModes.map((m) => m.name));
       const toRemove = new Set<string>();

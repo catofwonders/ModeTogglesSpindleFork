@@ -104,6 +104,8 @@ export function setup(ctx: SpindleFrontendContext) {
     .mt-action-random { background: rgba(128,0,128,0.08); color: #DA70D6; }
     .mt-action-schedule { background: rgba(137,112,218,0.08); color: #8970da; }
     .mt-action-presets { background: rgba(255,215,0,0.08); color: #FFD700; }
+    .mt-action-config-export { background: rgba(0,200,200,0.08); color: #5FD4D4; }
+    .mt-action-config-import { background: rgba(0,200,200,0.08); color: #5FD4D4; }
     .mt-preset-row { display: flex; align-items: center; gap: 8px; padding: 8px;
       border-bottom: 1px solid var(--lumiverse-border, #333); }
     .mt-preset-row:hover { background: rgba(255,255,255,0.03); }
@@ -166,6 +168,16 @@ export function setup(ctx: SpindleFrontendContext) {
       const a = document.createElement('a');
       a.href = url;
       a.download = 'mode-toggles-export.txt';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } else if (payload.type === 'export_config_data') {
+      const blob = new Blob([payload.json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'mode-toggles-config.json';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -460,13 +472,13 @@ export function setup(ctx: SpindleFrontendContext) {
     const row1 = mkEl('div');
     row1.style.cssText = 'display:flex;gap:3px;padding:2px 4px;';
     row1.appendChild(actionBtn('+ Add New', 'mt-action-add', showAddEditPrompt));
-    row1.appendChild(actionBtn('Export', 'mt-action-export', () =>
+    row1.appendChild(actionBtn('Export Modes', 'mt-action-export', () =>
       send({ type: 'export_modes' })));
-    row1.appendChild(actionBtn('Import', 'mt-action-import', doImport));
+    row1.appendChild(actionBtn('Import Modes', 'mt-action-import', doImport));
     container.appendChild(row1);
 
     const row2 = mkEl('div');
-    row2.style.cssText = 'display:flex;gap:3px;padding:2px 4px 4px;';
+    row2.style.cssText = 'display:flex;gap:3px;padding:2px 4px;';
     row2.appendChild(actionBtn('Disable All', 'mt-action-disable', () =>
       send({ type: 'disable_all' })));
     row2.appendChild(actionBtn('Random', 'mt-action-random', () =>
@@ -474,6 +486,13 @@ export function setup(ctx: SpindleFrontendContext) {
     row2.appendChild(actionBtn('Schedule', 'mt-action-schedule', showScheduleDialog));
     row2.appendChild(actionBtn('Presets', 'mt-action-presets', showPresetsDialog));
     container.appendChild(row2);
+
+    const row3 = mkEl('div');
+    row3.style.cssText = 'display:flex;gap:3px;padding:2px 4px 4px;';
+    row3.appendChild(actionBtn('Export Config', 'mt-action-config-export', () =>
+      send({ type: 'export_config' })));
+    row3.appendChild(actionBtn('Import Config', 'mt-action-config-import', doImportConfig));
+    container.appendChild(row3);
   }
 
   function renderAccordion(title: string, items: ModeView[]): HTMLElement {
@@ -689,6 +708,31 @@ export function setup(ctx: SpindleFrontendContext) {
         if (text.trim()) {
           send({ type: 'import_modes', text });
         }
+      }
+    } catch (e) {
+      // User cancelled or error
+    }
+  }
+
+  async function doImportConfig() {
+    try {
+      const files = await ctx.uploads.pickFile({
+        accept: ['.json', 'application/json'],
+        multiple: false,
+      });
+      if (files.length > 0) {
+        const text = new TextDecoder().decode(files[0].bytes);
+        let parsed: any;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          showThemedAlert('Invalid JSON file.');
+          return;
+        }
+        showThemedConfirm(
+          'This will replace all settings, custom modes, and presets. Per-chat mode states will be kept. Continue?',
+          () => send({ type: 'import_config', config: parsed })
+        );
       }
     } catch (e) {
       // User cancelled or error
