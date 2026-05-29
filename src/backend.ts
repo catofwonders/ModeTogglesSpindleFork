@@ -74,9 +74,10 @@ let currentUserId: string | undefined;
 // ===== Storage Helpers =====
 async function loadConfig(): Promise<void> {
   try {
-    const raw = await spindle.storage.read('config.json');
-    if (raw) {
-      const parsed = JSON.parse(raw);
+    // storage.read() now throws on a missing file; getJson handles
+    // read + parse + fallback in one call (Lumiverse 1.0 storage API).
+    const parsed = await spindle.storage.getJson<Partial<Config>>('config.json', { fallback: {} });
+    if (parsed && typeof parsed === 'object') {
       config = { ...config, ...parsed };
     }
   } catch (e) {
@@ -105,7 +106,7 @@ async function loadConfig(): Promise<void> {
 
 async function saveConfig(): Promise<void> {
   try {
-    await spindle.storage.write('config.json', JSON.stringify(config, null, 2));
+    await spindle.storage.setJson('config.json', config, { indent: 2 });
   } catch (e) {
     spindle.log.error(`Failed to save config: ${e}`);
   }
@@ -116,13 +117,10 @@ async function saveConfig(): Promise<void> {
 // The frontend-supplied chatId and cached currentChatId are only fallbacks.
 async function resolveActiveChatId(hint?: string): Promise<string> {
   try {
-    const chatsApi = (spindle as any).chats;
-    if (chatsApi?.getActive) {
-      const active = currentUserId
-        ? await chatsApi.getActive(currentUserId)
-        : await chatsApi.getActive();
-      if (active?.id) return active.id;
-    }
+    const active = currentUserId
+      ? await spindle.chats.getActive(currentUserId)
+      : await spindle.chats.getActive();
+    if (active?.id) return active.id;
   } catch {
     // chats permission not granted — fall back
   }
@@ -585,26 +583,38 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
 });
 
 // ===== Events =====
-spindle.on('CHAT_CHANGED', async (data: any) => {
-  const resolved = await resolveActiveChatId(data?.chatId);
+spindle.on('CHAT_CHANGED', async (data) => {
+  // Lumiverse 1.0 payload shape is { chat: { id }, changedFields? }.
+  // Keep a defensive fallback to the older flat { chatId } for pre-1.0 hosts.
+  const hint = data?.chat?.id ?? (data as any)?.chatId;
+  const resolved = await resolveActiveChatId(hint);
   if (resolved === currentChatId) return;
   currentChatId = resolved;
   tick = 0;
   sendStateToFrontend();
 });
 
-// Refresh UI after generation completes so countdown changes are visible
-spindle.on('GENERATION_ENDED', async () => {
-  sendStateToFrontend();
-});
+// Note: post-generation UI refresh (so OFF countdown changes are visible) is
+// driven from the interceptor itself — see sendStateToFrontend() at its end.
+// Subscribing to GENERATION_ENDED would require the broad `generation`
+// permission in Lumiverse 1.0, which this extension intentionally avoids.
 
 // ===== Interceptor =====
 spindle.permissions.onDenied(({ permission, operation }) => {
   spindle.log.warn(`Permission "${permission}" denied for ${operation}`);
 });
 
-spindle.registerInterceptor(async (messages, ctx: any) => {
+// Subset of the interceptor context we rely on. The full object also carries
+// connectionId, personaId, generationType and activatedWorldInfo (Lumiverse 1.0).
+interface InterceptorContext {
+  chatId?: string;
+  generationType?: string;
+}
+
+spindle.registerInterceptor(async (messages, context) => {
   if (!config.enabled) return messages;
+
+  const ctx = context as InterceptorContext;
 
   // Use generation context's chatId as source of truth; it's the actual chat
   // this generation is for, regardless of any UI state drift.
@@ -643,16 +653,11 @@ spindle.registerInterceptor(async (messages, ctx: any) => {
     const post = (config.postFraming ?? DEFAULT_POST_FRAMING).trim();
     let modeText = '\n' + pre + '\n\n' + lines.join('\n') + '\n\n' + post + '\n';
 
-    // Resolve Lumiverse macros ({{char}}, {{user}}, etc.) in the final text
+    // Resolve Lumiverse macros ({{char}}, {{user}}, etc.) in the final text.
+    // characterId is inferred from chatId by the macro engine.
     try {
-      const macros = (spindle as any).macros;
-      if (macros?.resolve) {
-        const resolved = await macros.resolve(modeText, {
-          chatId,
-          characterId: ctx?.characterId,
-        });
-        if (resolved?.text) modeText = resolved.text;
-      }
+      const resolved = await spindle.macros.resolve(modeText, { chatId });
+      if (resolved?.text) modeText = resolved.text;
     } catch {
       // macros API unavailable — inject unresolved
     }
@@ -707,6 +712,9 @@ spindle.registerInterceptor(async (messages, ctx: any) => {
   if (removed.length) toast.info(`Cleared ${removed.length} mode(s) from memory`);
 
   saveConfig();
+  // Push updated countdowns to the UI here, since we no longer rely on the
+  // permission-gated GENERATION_ENDED event for the refresh.
+  sendStateToFrontend();
   return messages;
 });
 

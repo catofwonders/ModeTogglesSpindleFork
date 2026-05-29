@@ -191,7 +191,9 @@ export function setup(ctx: SpindleFrontendContext) {
   // Proactively sync on chat switches so the popover/tab UI reflects the new
   // chat immediately, instead of waiting for a backend-driven state_update.
   ctx.events.on('CHAT_CHANGED', (data: any) => {
-    const newId = data?.chatId;
+    // Lumiverse 1.0 payload is { chat: { id }, changedFields? };
+    // fall back to the older flat { chatId } for pre-1.0 hosts.
+    const newId = data?.chat?.id ?? data?.chatId;
     if (newId && newId !== currentChatId) {
       currentChatId = newId;
     }
