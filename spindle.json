@@ -9,7 +9,7 @@
   "permissions": ["interceptor", "chats"],
   "entry_backend": "dist/backend.js",
   "entry_frontend": "dist/frontend.js",
-  "minimum_lumiverse_version": "0.1.0",
+  "minimum_lumiverse_version": "1.0.0",
   "storage_seed_files": [
     { "from": "defaults/modes/", "to": "modes/", "overwrite": false },
     { "from": "defaults/config.json", "to": "config.json", "overwrite": false }
