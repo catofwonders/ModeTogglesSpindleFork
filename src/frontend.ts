@@ -16,6 +16,8 @@ interface StateUpdate {
   activeCount: number;
   chatId: string;
   presets: Array<{ name: string; count: number }>;
+  undoAvailable: boolean;
+  undoLabel: string;
   settings: {
     loadCoreModes: boolean;
     preFraming: string;
@@ -24,6 +26,8 @@ interface StateUpdate {
     countdown: number;
     injectionPosition: string;
     injectionRole: string;
+    deterministic: boolean;
+    sortMode: 'group' | 'flat';
   };
 }
 
@@ -106,6 +110,10 @@ export function setup(ctx: SpindleFrontendContext) {
     .mt-action-presets { background: rgba(255,215,0,0.08); color: #FFD700; }
     .mt-action-config-export { background: rgba(0,200,200,0.08); color: #5FD4D4; }
     .mt-action-config-import { background: rgba(0,200,200,0.08); color: #5FD4D4; }
+    .mt-action-tidy { background: rgba(120,180,120,0.10); color: #9ACD9A; }
+    .mt-action-undo { background: rgba(255,200,0,0.12); color: #FFD45F; }
+    .mt-acc-count { color: var(--lumiverse-text-dim, #888); font-weight: normal; font-family: monospace; }
+    .mt-acc-count-active { color: #7ED957; }
     .mt-preset-row { display: flex; align-items: center; gap: 8px; padding: 8px;
       border-bottom: 1px solid var(--lumiverse-border, #333); }
     .mt-preset-row:hover { background: rgba(255,255,255,0.03); }
@@ -182,6 +190,25 @@ export function setup(ctx: SpindleFrontendContext) {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+    } else if (payload.type === 'tidy_report') {
+      const r = payload.report as {
+        orphanToggles: number; emptyPresets: number; deadPresetRefs: number; emptyChatBuckets: number;
+      };
+      const total = r.orphanToggles + r.emptyPresets + r.deadPresetRefs + r.emptyChatBuckets;
+      if (total === 0) {
+        showThemedAlert('Everything is tidy — no orphaned toggles, dead references, or empty presets.');
+      } else {
+        const lines = [
+          `${r.orphanToggles} orphaned toggle(s) (modes no longer exist)`,
+          `${r.deadPresetRefs} dead preset reference(s)`,
+          `${r.emptyPresets} empty preset(s)`,
+          `${r.emptyChatBuckets} empty chat state bucket(s)`,
+        ].filter((_, i) => [r.orphanToggles, r.deadPresetRefs, r.emptyPresets, r.emptyChatBuckets][i] > 0);
+        showThemedConfirm(
+          'Clean up the following?\n\n• ' + lines.join('\n• '),
+          () => send({ type: 'apply_tidy' })
+        );
+      }
     }
   });
 
@@ -257,6 +284,40 @@ export function setup(ctx: SpindleFrontendContext) {
       send({ type: 'update_settings', loadCoreModes: coreCb.checked }));
     coreLabel.append(coreCb, document.createTextNode(' Load Core (Default) Modes'));
     container.appendChild(coreLabel);
+
+    // Deterministic mode
+    const detLabel = mkEl('label', 'mt-label');
+    const detCb = document.createElement('input');
+    detCb.type = 'checkbox';
+    detCb.checked = state.settings.deterministic;
+    detCb.addEventListener('change', () =>
+      send({ type: 'update_settings', deterministic: detCb.checked }));
+    detLabel.append(detCb, document.createTextNode(' Deterministic (ignore schedules — ON is always ON)'));
+    detLabel.title = 'When enabled, an active mode is injected every turn with no probability roll. Schedule masks are ignored.';
+    container.appendChild(detLabel);
+
+    // Sort order
+    const sortSection = mkEl('div', 'mt-section');
+    const sortLbl = document.createElement('small');
+    sortLbl.className = 'mt-small-label';
+    sortLbl.textContent = 'Mode list order';
+    const sortSelect = document.createElement('select') as HTMLSelectElement;
+    sortSelect.className = 'mt-select';
+    const sortOptions: [string, string][] = [
+      ['group', 'By group (A→Z)'],
+      ['flat', 'All modes (A→Z)'],
+    ];
+    for (const [val, label] of sortOptions) {
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = label;
+      if (val === state.settings.sortMode) opt.selected = true;
+      sortSelect.appendChild(opt);
+    }
+    sortSelect.addEventListener('change', () =>
+      send({ type: 'update_settings', sortMode: sortSelect.value }));
+    sortSection.append(sortLbl, sortSelect);
+    container.appendChild(sortSection);
 
     // Pre-framing
     container.appendChild(
@@ -454,16 +515,33 @@ export function setup(ctx: SpindleFrontendContext) {
       container.appendChild(renderAccordion('Enabled', enabled));
     }
 
-    // Group sections
-    const groupsMap = new Map<string, ModeView[]>();
-    for (const mode of filtered) {
-      const g = mode.group || 'Unsorted';
-      if (!groupsMap.has(g)) groupsMap.set(g, []);
-      groupsMap.get(g)!.push(mode);
+    if (state.settings.sortMode === 'flat') {
+      // One predictable A→Z list of everything.
+      const all = filtered.slice().sort((a, b) => a.name.localeCompare(b.name));
+      if (all.length > 0) container.appendChild(renderAccordion('All Modes', all, true));
+    } else {
+      // Group sections — groups A→Z, modes A→Z within each.
+      const groupsMap = new Map<string, ModeView[]>();
+      for (const mode of filtered) {
+        const g = mode.group || 'Unsorted';
+        if (!groupsMap.has(g)) groupsMap.set(g, []);
+        groupsMap.get(g)!.push(mode);
+      }
+      for (const gName of Array.from(groupsMap.keys()).sort()) {
+        const items = groupsMap.get(gName)!.sort((a, b) => a.name.localeCompare(b.name));
+        container.appendChild(renderAccordion(gName, items, true));
+      }
     }
-    for (const gName of Array.from(groupsMap.keys()).sort()) {
-      const items = groupsMap.get(gName)!.sort((a, b) => a.name.localeCompare(b.name));
-      container.appendChild(renderAccordion(gName, items));
+
+    // Undo bar (reversibility) — only when a destructive action can be reverted.
+    if (state.undoAvailable) {
+      const undoRow = mkEl('div');
+      undoRow.style.cssText = 'display:flex;padding:4px;';
+      const undoBtn = actionBtn(`↩ Undo: ${state.undoLabel}`, 'mt-action-undo', () =>
+        send({ type: 'undo_last' }));
+      undoBtn.style.flex = '1';
+      undoRow.appendChild(undoBtn);
+      container.appendChild(undoRow);
     }
 
     // Separator + actions
@@ -494,14 +572,25 @@ export function setup(ctx: SpindleFrontendContext) {
     row3.appendChild(actionBtn('Export Config', 'mt-action-config-export', () =>
       send({ type: 'export_config' })));
     row3.appendChild(actionBtn('Import Config', 'mt-action-config-import', doImportConfig));
+    row3.appendChild(actionBtn('Tidy', 'mt-action-tidy', () =>
+      send({ type: 'request_tidy_report' })));
     container.appendChild(row3);
   }
 
-  function renderAccordion(title: string, items: ModeView[]): HTMLElement {
+  function renderAccordion(title: string, items: ModeView[], showActiveCount = false): HTMLElement {
     const section = document.createElement('div');
     const header = document.createElement('div');
     header.className = 'mt-accordion-header';
-    header.textContent = `${title} (${items.length})`;
+    if (showActiveCount) {
+      const active = items.filter((m) => m.status === 'ON').length;
+      header.textContent = title;
+      const countSpan = document.createElement('span');
+      countSpan.className = active > 0 ? 'mt-acc-count mt-acc-count-active' : 'mt-acc-count';
+      countSpan.textContent = ` (${active}/${items.length})`;
+      header.appendChild(countSpan);
+    } else {
+      header.textContent = `${title} (${items.length})`;
+    }
     const content = document.createElement('div');
     content.className = 'mt-accordion-content';
     content.style.display = accordionOpen[title] ? 'block' : 'none';
@@ -559,7 +648,7 @@ export function setup(ctx: SpindleFrontendContext) {
     modal.className = 'mt-modal';
 
     const msg = document.createElement('p');
-    msg.style.cssText = 'margin:0 0 16px';
+    msg.style.cssText = 'margin:0 0 16px;white-space:pre-line;';
     msg.textContent = message;
     modal.appendChild(msg);
 
@@ -589,7 +678,7 @@ export function setup(ctx: SpindleFrontendContext) {
     modal.className = 'mt-modal';
 
     const msg = document.createElement('p');
-    msg.style.cssText = 'margin:0 0 16px';
+    msg.style.cssText = 'margin:0 0 16px;white-space:pre-line;';
     msg.textContent = message;
     modal.appendChild(msg);
 
@@ -761,6 +850,13 @@ export function setup(ctx: SpindleFrontendContext) {
     title.style.cssText = 'margin:0 0 8px';
     title.textContent = 'Mode Scheduling';
     modal.appendChild(title);
+
+    if (state.settings.deterministic) {
+      const note = document.createElement('div');
+      note.style.cssText = 'margin:0 0 10px;padding:6px 8px;border-radius:4px;background:rgba(255,200,0,0.10);color:#FFD45F;font-size:11px;';
+      note.textContent = 'Deterministic mode is ON — schedules are currently ignored (active modes fire every turn). Turn it off in settings to use schedules.';
+      modal.appendChild(note);
+    }
 
     const help = document.createElement('small');
     help.style.cssText = 'display:block;margin-bottom:12px;color:var(--lumiverse-text-muted,#999)';

@@ -37,6 +37,8 @@ interface Config {
   countdown: number;
   injectionPosition: 'prepend' | 'append' | 'before_user' | 'start' | 'end';
   injectionRole: 'system' | 'user' | 'assistant';
+  deterministic: boolean;
+  sortMode: 'group' | 'flat';
   modeOverrides: Record<string, { description: string; group: string }>;
   chatStates: Record<string, Record<string, ModeState>>;
   presets: Record<string, { name: string; modes: string[] }>;
@@ -61,6 +63,8 @@ let config: Config = {
   countdown: DEFAULT_COUNTDOWN,
   injectionPosition: 'prepend',
   injectionRole: 'system',
+  deterministic: false,
+  sortMode: 'group',
   modeOverrides: {},
   chatStates: {},
   presets: {},
@@ -70,6 +74,10 @@ let coreModes: ModeDefinition[] = [];
 let tick = 0;
 let currentChatId = 'default';
 let currentUserId: string | undefined;
+
+// Single-level undo snapshot for destructive actions (Disable All, preset load).
+// Scoped to the chat it was captured in.
+let lastUndo: { chatId: string; label: string; states: Record<string, ModeState> } | null = null;
 
 // ===== Storage Helpers =====
 async function loadConfig(): Promise<void> {
@@ -220,7 +228,79 @@ function getModesView(chatId: string): ModeView[] {
   });
 }
 
-// ===== Frontend Communication =====
+// ===== Tidiness / Order Helpers =====
+function existingGroupNames(): string[] {
+  const set = new Set<string>();
+  for (const m of coreModes) if (m.group) set.add(m.group);
+  for (const ov of Object.values(config.modeOverrides)) if (ov.group) set.add(ov.group);
+  return Array.from(set);
+}
+
+// Trim + collapse whitespace, and snap to an existing group's canonical casing
+// so "Social & Power" and "social & power " can't fork into two accordions.
+function normalizeGroup(raw: string): string {
+  const cleaned = (raw || '').replace(/\s+/g, ' ').trim();
+  if (!cleaned) return 'Unsorted';
+  const lc = cleaned.toLowerCase();
+  for (const g of existingGroupNames()) {
+    if (g.toLowerCase() === lc) return g;
+  }
+  return cleaned;
+}
+
+interface TidyReport {
+  orphanToggles: number;   // per-chat toggles pointing at modes that no longer exist
+  emptyPresets: number;    // presets with nothing live left in them
+  deadPresetRefs: number;  // preset entries pointing at modes that no longer exist
+  emptyChatBuckets: number;// chat state buckets with no toggles left
+}
+
+function computeTidyReport(): TidyReport {
+  const effective = new Set(getEffectiveModes().map((m) => m.name));
+  let orphanToggles = 0;
+  let emptyChatBuckets = 0;
+  for (const [cid, states] of Object.entries(config.chatStates)) {
+    const names = Object.keys(states);
+    let live = 0;
+    for (const name of names) {
+      if (effective.has(name)) live++; else orphanToggles++;
+    }
+    // The active chat always has (or instantly regains) a bucket, so don't
+    // count it as cleanable — otherwise "tidy" could never report zero.
+    if ((names.length === 0 || live === 0) && cid !== currentChatId) emptyChatBuckets++;
+  }
+  let emptyPresets = 0;
+  let deadPresetRefs = 0;
+  for (const p of Object.values(config.presets)) {
+    const live = p.modes.filter((n) => effective.has(n));
+    deadPresetRefs += p.modes.length - live.length;
+    if (live.length === 0) emptyPresets++;
+  }
+  return { orphanToggles, emptyPresets, deadPresetRefs, emptyChatBuckets };
+}
+
+function applyTidy(): void {
+  const effective = new Set(getEffectiveModes().map((m) => m.name));
+  // Drop orphaned toggles, then drop now-empty chat buckets.
+  for (const [cid, states] of Object.entries(config.chatStates)) {
+    for (const name of Object.keys(states)) {
+      if (!effective.has(name)) delete states[name];
+    }
+    if (Object.keys(states).length === 0) delete config.chatStates[cid];
+  }
+  // Strip dead references from presets, drop presets left empty.
+  for (const [key, p] of Object.entries(config.presets)) {
+    p.modes = p.modes.filter((n) => effective.has(n));
+    if (p.modes.length === 0) delete config.presets[key];
+  }
+}
+
+function captureUndo(chatId: string, label: string): void {
+  const st = getChatState(chatId);
+  lastUndo = { chatId, label, states: JSON.parse(JSON.stringify(st)) };
+}
+
+
 function sendStateToFrontend(): void {
   const view = getModesView(currentChatId);
   const activeCount = view.filter((m) => m.status === 'ON').length;
@@ -234,6 +314,8 @@ function sendStateToFrontend(): void {
     activeCount,
     chatId: currentChatId,
     presets,
+    undoAvailable: !!(lastUndo && lastUndo.chatId === currentChatId),
+    undoLabel: lastUndo && lastUndo.chatId === currentChatId ? lastUndo.label : '',
     settings: {
       loadCoreModes: config.loadCoreModes,
       preFraming: config.preFraming,
@@ -242,6 +324,8 @@ function sendStateToFrontend(): void {
       countdown: config.countdown,
       injectionPosition: config.injectionPosition,
       injectionRole: config.injectionRole,
+      deterministic: config.deterministic,
+      sortMode: config.sortMode,
     },
   });
 }
@@ -292,6 +376,8 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       if (payload.countdown !== undefined) config.countdown = payload.countdown;
       if (payload.injectionPosition !== undefined) config.injectionPosition = payload.injectionPosition;
       if (payload.injectionRole !== undefined) config.injectionRole = payload.injectionRole;
+      if (payload.deterministic !== undefined) config.deterministic = !!payload.deterministic;
+      if (payload.sortMode !== undefined) config.sortMode = payload.sortMode === 'flat' ? 'flat' : 'group';
       await saveConfig();
       sendStateToFrontend();
       break;
@@ -310,7 +396,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       } else {
         config.modeOverrides[payload.name] = {
           description: payload.description,
-          group: payload.group || 'Unsorted',
+          group: normalizeGroup(payload.group),
         };
         toast.success(`Mode "${payload.name}" saved`);
       }
@@ -364,7 +450,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
           description = (parts[1] || '').trim();
         } else { errors++; continue; }
         if (!name || !description) { errors++; continue; }
-        config.modeOverrides[name] = { description, group: group || 'Unsorted' };
+        config.modeOverrides[name] = { description, group: normalizeGroup(group) };
         imported++;
       }
       await saveConfig();
@@ -451,8 +537,10 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         preFraming: DEFAULT_PRE_FRAMING, mergeFormat: DEFAULT_MERGE_FORMAT,
         postFraming: DEFAULT_POST_FRAMING, countdown: DEFAULT_COUNTDOWN,
         injectionPosition: 'prepend', injectionRole: 'system',
+        deterministic: false, sortMode: 'group',
         modeOverrides: {}, chatStates: {}, presets: preservedPresets,
       };
+      lastUndo = null;
       await saveConfig();
       sendStateToFrontend();
       toast.success('Extension reset to defaults');
@@ -461,6 +549,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
     case 'disable_all': {
       if (!config.enabled) return;
       const st = getChatState(chatId);
+      const snapshot = JSON.parse(JSON.stringify(st));
       let count = 0;
       for (const [, s] of Object.entries(st)) {
         if (s.status === 'ON') {
@@ -469,10 +558,14 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
           count++;
         }
       }
-      await saveConfig();
-      sendStateToFrontend();
-      if (count > 0) toast.success(`Disabled ${count} mode(s)`);
-      else toast.info('No active modes to disable');
+      if (count > 0) {
+        lastUndo = { chatId, label: 'Disable All', states: snapshot };
+        await saveConfig();
+        sendStateToFrontend();
+        toast.success(`Disabled ${count} mode(s) — undo available`);
+      } else {
+        toast.info('No active modes to disable');
+      }
       break;
     }
 
@@ -526,6 +619,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       if (!preset) { toast.error(`Preset "${name}" not found`); return; }
 
       const st = getChatState(chatId);
+      const undoSnapshot = JSON.parse(JSON.stringify(st));
       const presetSet = new Set(preset.modes);
 
       if (mergeMode === 'replace') {
@@ -545,10 +639,11 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         st[modeName] = { status: 'ON', schedule: prev?.schedule || 'X' };
         if (!wasOn) activated++;
       }
+      lastUndo = { chatId, label: `Load "${name}"`, states: undoSnapshot };
       await saveConfig();
       sendStateToFrontend();
       const verb = mergeMode === 'replace' ? 'Loaded' : 'Merged';
-      toast.success(`${verb} "${name}" — ${activated} mode${activated === 1 ? '' : 's'} activated`);
+      toast.success(`${verb} "${name}" — ${activated} mode${activated === 1 ? '' : 's'} activated · undo available`);
       break;
     }
 
@@ -577,6 +672,35 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       await saveConfig();
       sendStateToFrontend();
       toast.success(`Renamed to "${newName}"`);
+      break;
+    }
+
+    case 'undo_last': {
+      if (!lastUndo || lastUndo.chatId !== chatId) { toast.info('Nothing to undo'); return; }
+      const label = lastUndo.label;
+      config.chatStates[chatId] = lastUndo.states;
+      lastUndo = null;
+      await saveConfig();
+      sendStateToFrontend();
+      toast.success(`Undid: ${label}`);
+      break;
+    }
+
+    case 'request_tidy_report': {
+      spindle.sendToFrontend({ type: 'tidy_report', report: computeTidyReport() });
+      break;
+    }
+
+    case 'apply_tidy': {
+      const before = computeTidyReport();
+      const total = before.orphanToggles + before.emptyPresets + before.deadPresetRefs + before.emptyChatBuckets;
+      if (total === 0) { toast.info('Already tidy — nothing to clean'); return; }
+      applyTidy();
+      // A tidy pass can invalidate the undo snapshot (it may reference removed modes).
+      lastUndo = null;
+      await saveConfig();
+      sendStateToFrontend();
+      toast.success(`Tidied: removed ${before.orphanToggles} orphan toggle(s), ${before.emptyPresets} empty preset(s), ${before.deadPresetRefs} dead reference(s)`);
       break;
     }
   }
@@ -636,12 +760,16 @@ spindle.registerInterceptor(async (messages, context) => {
     const lines = modesToInclude.map((m) => {
       const displayStatus = m.status;
 
-      const schedule = m.schedule || 'X';
-      const tickChar = schedule[tick % schedule.length];
-      const prob = parseInt(tickChar.replace('X', '10').replace('-', '0')) * 10;
-      const active = Math.round(Math.random() * 100) <= prob;
-
-      const finalStatus = (displayStatus === 'ON' && !active) ? 'OFF' : displayStatus;
+      // Deterministic mode: ON is strictly ON, no probability roll.
+      // Otherwise apply the per-mode schedule mask as before.
+      let finalStatus = displayStatus;
+      if (!config.deterministic) {
+        const schedule = m.schedule || 'X';
+        const tickChar = schedule[tick % schedule.length];
+        const prob = parseInt(tickChar.replace('X', '10').replace('-', '0')) * 10;
+        const active = Math.round(Math.random() * 100) <= prob;
+        finalStatus = (displayStatus === 'ON' && !active) ? 'OFF' : displayStatus;
+      }
 
       return mergeFormat
         .replaceAll('{{modeName}}', m.name)
