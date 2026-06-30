@@ -207,14 +207,22 @@ function getEffectiveModes(): ModeDefinition[] {
   return Array.from(baseMap.values());
 }
 
+// Create-on-access: use ONLY on write paths (toggling a mode on, etc.).
 function getChatState(chatId: string): Record<string, ModeState> {
   if (!config.chatStates[chatId]) config.chatStates[chatId] = {};
   return config.chatStates[chatId];
 }
 
+// Read-only: never creates or persists an empty bucket. Use on read paths
+// (rendering, snapshots, interceptor) so merely viewing a chat doesn't leave
+// an empty {} bucket behind in storage.
+function peekChatState(chatId: string): Record<string, ModeState> {
+  return config.chatStates[chatId] || {};
+}
+
 function getModesView(chatId: string): ModeView[] {
   const effective = getEffectiveModes();
-  const state = getChatState(chatId);
+  const state = peekChatState(chatId);
   return effective.map((m) => {
     const s = state[m.name];
     return {
@@ -256,7 +264,7 @@ interface TidyReport {
 }
 
 function computeTidyReport(): TidyReport {
-  const effective = new Set(getEffectiveModes().map((m) => m.name));
+  const effective = knownModeNames();
   let orphanToggles = 0;
   let emptyChatBuckets = 0;
   for (const [cid, states] of Object.entries(config.chatStates)) {
@@ -280,7 +288,7 @@ function computeTidyReport(): TidyReport {
 }
 
 function applyTidy(): void {
-  const effective = new Set(getEffectiveModes().map((m) => m.name));
+  const effective = knownModeNames();
   // Drop orphaned toggles, then drop now-empty chat buckets.
   for (const [cid, states] of Object.entries(config.chatStates)) {
     for (const name of Object.keys(states)) {
@@ -295,9 +303,14 @@ function applyTidy(): void {
   }
 }
 
-function captureUndo(chatId: string, label: string): void {
-  const st = getChatState(chatId);
-  lastUndo = { chatId, label, states: JSON.parse(JSON.stringify(st)) };
+// The full universe of modes that legitimately exist, INDEPENDENT of the
+// "Load core modes" display toggle. Tidy uses this so a toggle for a real
+// mode is never mistaken for an orphan just because core modes are hidden.
+function knownModeNames(): Set<string> {
+  const set = new Set<string>();
+  for (const m of coreModes) set.add(m.name);
+  for (const name of Object.keys(config.modeOverrides)) set.add(name);
+  return set;
 }
 
 
@@ -548,7 +561,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
 
     case 'disable_all': {
       if (!config.enabled) return;
-      const st = getChatState(chatId);
+      const st = peekChatState(chatId);
       const snapshot = JSON.parse(JSON.stringify(st));
       let count = 0;
       for (const [, s] of Object.entries(st)) {
@@ -584,7 +597,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
     }
 
     case 'update_schedules': {
-      const st = getChatState(chatId);
+      const st = peekChatState(chatId);
       for (const [modeName, schedule] of Object.entries(payload.schedules as Record<string, string>)) {
         if (st[modeName]) {
           let val = schedule.toUpperCase().replace(/[^\-X0-9]/g, '');
@@ -599,7 +612,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
     case 'save_preset': {
       const name = (payload.name || '').trim();
       if (!name) { toast.error('Preset name required'); return; }
-      const st = getChatState(chatId);
+      const st = peekChatState(chatId);
       const onModes = Object.entries(st)
         .filter(([, s]) => s.status === 'ON')
         .map(([n]) => n);
@@ -745,7 +758,7 @@ spindle.registerInterceptor(async (messages, context) => {
   const chatId = ctx?.chatId || currentChatId || 'default';
   if (chatId !== currentChatId) currentChatId = chatId;
 
-  const state = getChatState(chatId);
+  const state = peekChatState(chatId);
   const view = getModesView(chatId);
 
   // Include modes that are ON, or OFF but still in countdown (lingering)
@@ -838,6 +851,12 @@ spindle.registerInterceptor(async (messages, context) => {
   }
 
   if (removed.length) toast.info(`Cleared ${removed.length} mode(s) from memory`);
+
+  // If the countdown sweep emptied this chat's bucket, drop it so it doesn't
+  // linger as drift. It's recreated only when a mode is actually toggled on.
+  if (config.chatStates[chatId] && Object.keys(config.chatStates[chatId]).length === 0) {
+    delete config.chatStates[chatId];
+  }
 
   saveConfig();
   // Push updated countdowns to the UI here, since we no longer rely on the
