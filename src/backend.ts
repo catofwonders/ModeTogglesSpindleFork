@@ -739,7 +739,9 @@ spindle.permissions.onDenied(({ permission, operation }) => {
 // connectionId, personaId, generationType and activatedWorldInfo (Lumiverse 1.0).
 interface InterceptorContext {
   chatId?: string;
+  connectionId?: string;
   personaId?: string;
+  userId?: string;
   generationType?: string;
 }
 
@@ -747,6 +749,16 @@ spindle.registerInterceptor(async (messages, context) => {
   if (!config.enabled) return messages;
 
   const ctx = context as InterceptorContext;
+
+  // DIAGNOSTIC: the interceptor context is typed `unknown` by the host and the
+  // docs field list may be incomplete. On operator-scoped installs the persona
+  // and macro APIs need a userId, so log exactly what the runtime hands us here
+  // to see whether a userId (or something we can resolve one from) is present.
+  spindle.log.info(
+    `Interceptor ctx keys=${JSON.stringify(Object.keys(ctx || {}))} userId=${
+      ctx?.userId ?? '(none)'
+    } connectionId=${ctx?.connectionId ?? '(none)'} personaId=${ctx?.personaId ?? '(none)'}`,
+  );
 
   // Use generation context's chatId as source of truth; it's the actual chat
   // this generation is for, regardless of any UI state drift.
@@ -791,9 +803,12 @@ spindle.registerInterceptor(async (messages, context) => {
       // handing the rest of the text to the engine.
       if (modeText.includes('{{user}}')) {
         try {
+          // On operator-scoped installs the persona API needs an explicit
+          // userId. Pass ctx.userId when the runtime provides one; on
+          // user-scoped installs it's undefined and inferred automatically.
           const persona = ctx.personaId
-            ? await spindle.personas.get(ctx.personaId)
-            : await spindle.personas.getActive();
+            ? await spindle.personas.get(ctx.personaId, ctx.userId)
+            : await spindle.personas.getActive(ctx.userId);
           if (persona?.name) {
             modeText = modeText.replaceAll('{{user}}', persona.name);
           } else {
@@ -807,7 +822,10 @@ spindle.registerInterceptor(async (messages, context) => {
       // Resolve the remaining Lumiverse macros ({{char}}, etc.) in the final
       // text. characterId is inferred from chatId by the macro engine.
       try {
-        const resolved = await spindle.macros.resolve(modeText, { chatId });
+        const resolved = await spindle.macros.resolve(modeText, {
+          chatId,
+          userId: ctx.userId,
+        });
         if (resolved?.text) modeText = resolved.text;
         // Surface macro-engine warnings instead of swallowing them, so an
         // unresolved token shows up in the logs rather than silently shipping.
