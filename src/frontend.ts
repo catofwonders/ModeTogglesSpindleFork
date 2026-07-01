@@ -5,7 +5,6 @@ interface ModeView {
   group: string;
   description: string;
   status: string;
-  countdown?: number;
   schedule?: string;
 }
 
@@ -23,7 +22,6 @@ interface StateUpdate {
     preFraming: string;
     mergeFormat: string;
     postFraming: string;
-    countdown: number;
     injectionPosition: string;
     injectionRole: string;
     deterministic: boolean;
@@ -96,7 +94,6 @@ export function setup(ctx: SpindleFrontendContext) {
     .mt-mode-desc { font-size: 11px; opacity: 0.8; margin-top: 2px; }
     .mt-mode-on { background: rgba(0,255,0,0.08); color: #90EE90; }
     .mt-mode-off { background: rgba(255,0,0,0.06); color: #FFB6C1; }
-    .mt-mode-countdown { background: rgba(255,165,0,0.08); color: #FFD700; }
     .mt-separator { border-top: 2px solid var(--lumiverse-border, #555); margin: 6px 0; }
     .mt-action-btn { cursor: pointer; padding: 5px 10px; font-size: 12px; text-align: center;
       border-radius: var(--lumiverse-radius, 3px); flex: 1; }
@@ -337,21 +334,6 @@ export function setup(ctx: SpindleFrontendContext) {
       labeledTextarea('Text after mode content', state.settings.postFraming, (val) =>
         send({ type: 'update_settings', postFraming: val }))
     );
-
-    // Countdown
-    const countSection = mkEl('div', 'mt-section');
-    const countLbl = document.createElement('small');
-    countLbl.className = 'mt-small-label';
-    countLbl.textContent = 'Message count before OFF removal';
-    const countInput = document.createElement('input') as HTMLInputElement;
-    countInput.type = 'number';
-    countInput.className = 'mt-input';
-    countInput.value = String(state.settings.countdown);
-    countInput.min = '0';
-    countInput.addEventListener('change', () =>
-      send({ type: 'update_settings', countdown: parseInt(countInput.value) || 5 }));
-    countSection.append(countLbl, countInput);
-    container.appendChild(countSection);
 
     // Injection Position
     const posSection = mkEl('div', 'mt-section');
@@ -607,13 +589,8 @@ export function setup(ctx: SpindleFrontendContext) {
   }
 
   function renderModeButton(mode: ModeView): HTMLElement {
-    let cls = 'mt-mode-off';
-    let statusText = mode.status;
-    if (mode.status === 'ON') cls = 'mt-mode-on';
-    else if (mode.status === 'OFF' && mode.countdown !== undefined) {
-      cls = 'mt-mode-countdown';
-      statusText = `OFF(${mode.countdown})`;
-    }
+    const cls = mode.status === 'ON' ? 'mt-mode-on' : 'mt-mode-off';
+    const statusText = mode.status;
 
     const btn = document.createElement('div');
     btn.className = `mt-mode-btn ${cls}`;

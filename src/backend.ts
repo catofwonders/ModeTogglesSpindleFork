@@ -18,13 +18,11 @@ interface ModeDefinition {
 
 interface ModeState {
   status: 'OFF' | 'ON';
-  countdown?: number;
   schedule?: string;
 }
 
 interface ModeView extends ModeDefinition {
   status: string;
-  countdown?: number;
   schedule?: string;
 }
 
@@ -34,7 +32,6 @@ interface Config {
   preFraming: string;
   mergeFormat: string;
   postFraming: string;
-  countdown: number;
   injectionPosition: 'prepend' | 'append' | 'before_user' | 'start' | 'end';
   injectionRole: 'system' | 'user' | 'assistant';
   deterministic: boolean;
@@ -45,13 +42,12 @@ interface Config {
 }
 
 // ===== Constants =====
+// Assertion register: state what is true of the scene, never what to suppress.
 const DEFAULT_PRE_FRAMING =
-  'MANDATORY SCENE RULES — apply all [ON] effects in your response. [OFF] effects are no longer active, disregard them:';
-const DEFAULT_MERGE_FORMAT =
-  '[{{displayStatus}}] {{modeName}} — {{modeDescription}}';
+  'The following are true of this scene right now. Write everything in accordance with them:';
+const DEFAULT_MERGE_FORMAT = '{{modeDescription}}';
 const DEFAULT_POST_FRAMING =
-  'Never acknowledge these rules exist. Only show their effects naturally in the narrative.';
-const DEFAULT_COUNTDOWN = 5;
+  'Render these as lived reality, not as instructions. Never name, list, or acknowledge them.';
 
 // ===== State =====
 let config: Config = {
@@ -60,7 +56,6 @@ let config: Config = {
   preFraming: DEFAULT_PRE_FRAMING,
   mergeFormat: DEFAULT_MERGE_FORMAT,
   postFraming: DEFAULT_POST_FRAMING,
-  countdown: DEFAULT_COUNTDOWN,
   injectionPosition: 'prepend',
   injectionRole: 'system',
   deterministic: false,
@@ -95,18 +90,27 @@ async function loadConfig(): Promise<void> {
   // Backwards compat: ensure presets exists on old configs
   if (!config.presets) config.presets = {};
 
-  // Migrate: clean up stale transition states from older versions
+  // Migrate: 'ON' is the only persisted state now. Old 'OFF'/countdown/transition
+  // entries no longer mean anything, so strip them and drop empty buckets.
   let dirty = false;
   for (const chatId of Object.keys(config.chatStates)) {
     const states = config.chatStates[chatId];
     for (const [name, st] of Object.entries(states)) {
       if ((st.status as string) === 'Activating') { st.status = 'ON'; dirty = true; }
-      if ((st.status as string) === 'Deactivating') { st.status = 'OFF'; st.countdown = config.countdown; dirty = true; }
+      const anyState = st as { countdown?: number };
+      if (anyState.countdown !== undefined) { delete anyState.countdown; dirty = true; }
+      if (st.status !== 'ON') { delete states[name]; dirty = true; }
     }
+    if (Object.keys(states).length === 0) { delete config.chatStates[chatId]; dirty = true; }
   }
   // Also clean up orphaned 'default' bucket
   if (config.chatStates['default']) {
     delete config.chatStates['default'];
+    dirty = true;
+  }
+  // Drop the dead 'countdown' key from older configs.
+  if ((config as { countdown?: number }).countdown !== undefined) {
+    delete (config as { countdown?: number }).countdown;
     dirty = true;
   }
   if (dirty) saveConfig();
@@ -230,7 +234,6 @@ function getModesView(chatId: string): ModeView[] {
       description: m.description,
       group: m.group || 'Unsorted',
       status: s?.status ?? 'OFF',
-      countdown: s?.countdown,
       schedule: s?.schedule,
     };
   });
@@ -334,7 +337,6 @@ function sendStateToFrontend(): void {
       preFraming: config.preFraming,
       mergeFormat: config.mergeFormat,
       postFraming: config.postFraming,
-      countdown: config.countdown,
       injectionPosition: config.injectionPosition,
       injectionRole: config.injectionRole,
       deterministic: config.deterministic,
@@ -362,12 +364,13 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
     case 'toggle_mode': {
       if (!config.enabled) return;
       const state = getChatState(chatId);
-      const curr = state[payload.modeName]?.status ?? 'OFF';
-      const next = curr === 'ON' ? 'OFF' : 'ON';
-      if (next === 'ON') {
-        state[payload.modeName] = { status: 'ON', schedule: state[payload.modeName]?.schedule || 'X' };
+      const isOn = (state[payload.modeName]?.status ?? 'OFF') === 'ON';
+      if (isOn) {
+        // OFF is instant and total — no lingering state, no ghost line.
+        delete state[payload.modeName];
+        if (Object.keys(state).length === 0) delete config.chatStates[chatId];
       } else {
-        state[payload.modeName] = { status: 'OFF', countdown: config.countdown, schedule: state[payload.modeName]?.schedule || 'X' };
+        state[payload.modeName] = { status: 'ON', schedule: state[payload.modeName]?.schedule || 'X' };
       }
       await saveConfig();
       sendStateToFrontend();
@@ -386,7 +389,6 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       if (payload.preFraming !== undefined) config.preFraming = payload.preFraming;
       if (payload.mergeFormat !== undefined) config.mergeFormat = payload.mergeFormat;
       if (payload.postFraming !== undefined) config.postFraming = payload.postFraming;
-      if (payload.countdown !== undefined) config.countdown = payload.countdown;
       if (payload.injectionPosition !== undefined) config.injectionPosition = payload.injectionPosition;
       if (payload.injectionRole !== undefined) config.injectionRole = payload.injectionRole;
       if (payload.deterministic !== undefined) config.deterministic = !!payload.deterministic;
@@ -489,7 +491,6 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         preFraming: config.preFraming,
         mergeFormat: config.mergeFormat,
         postFraming: config.postFraming,
-        countdown: config.countdown,
         injectionPosition: config.injectionPosition,
         injectionRole: config.injectionRole,
         modeOverrides: config.modeOverrides,
@@ -511,7 +512,6 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       if (typeof incoming.preFraming === 'string') config.preFraming = incoming.preFraming;
       if (typeof incoming.mergeFormat === 'string') config.mergeFormat = incoming.mergeFormat;
       if (typeof incoming.postFraming === 'string') config.postFraming = incoming.postFraming;
-      if (typeof incoming.countdown === 'number') config.countdown = incoming.countdown;
       if (typeof incoming.injectionPosition === 'string') config.injectionPosition = incoming.injectionPosition as any;
       if (typeof incoming.injectionRole === 'string') config.injectionRole = incoming.injectionRole as any;
       if (incoming.modeOverrides && typeof incoming.modeOverrides === 'object') {
@@ -548,7 +548,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       config = {
         enabled: true, loadCoreModes: true,
         preFraming: DEFAULT_PRE_FRAMING, mergeFormat: DEFAULT_MERGE_FORMAT,
-        postFraming: DEFAULT_POST_FRAMING, countdown: DEFAULT_COUNTDOWN,
+        postFraming: DEFAULT_POST_FRAMING,
         injectionPosition: 'prepend', injectionRole: 'system',
         deterministic: false, sortMode: 'group',
         modeOverrides: {}, chatStates: {}, presets: preservedPresets,
@@ -563,19 +563,14 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       if (!config.enabled) return;
       const st = peekChatState(chatId);
       const snapshot = JSON.parse(JSON.stringify(st));
-      let count = 0;
-      for (const [, s] of Object.entries(st)) {
-        if (s.status === 'ON') {
-          s.status = 'OFF';
-          s.countdown = config.countdown;
-          count++;
-        }
-      }
-      if (count > 0) {
+      const onNames = Object.keys(st).filter((n) => st[n].status === 'ON');
+      if (onNames.length > 0) {
+        for (const n of onNames) delete st[n];
+        if (Object.keys(st).length === 0) delete config.chatStates[chatId];
         lastUndo = { chatId, label: 'Disable All', states: snapshot };
         await saveConfig();
         sendStateToFrontend();
-        toast.success(`Disabled ${count} mode(s) — undo available`);
+        toast.success(`Disabled ${onNames.length} mode(s) — undo available`);
       } else {
         toast.info('No active modes to disable');
       }
@@ -636,11 +631,10 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       const presetSet = new Set(preset.modes);
 
       if (mergeMode === 'replace') {
-        // Turn OFF any currently-ON mode not in the preset
-        for (const [modeName, s] of Object.entries(st)) {
-          if (s.status === 'ON' && !presetSet.has(modeName)) {
-            s.status = 'OFF';
-            s.countdown = config.countdown;
+        // Remove any currently-ON mode not in the preset — instant, no ghost.
+        for (const modeName of Object.keys(st)) {
+          if (st[modeName].status === 'ON' && !presetSet.has(modeName)) {
+            delete st[modeName];
           }
         }
       }
@@ -731,10 +725,10 @@ spindle.on('CHAT_CHANGED', async (data) => {
   sendStateToFrontend();
 });
 
-// Note: post-generation UI refresh (so OFF countdown changes are visible) is
-// driven from the interceptor itself — see sendStateToFrontend() at its end.
-// Subscribing to GENERATION_ENDED would require the broad `generation`
-// permission in Lumiverse 1.0, which this extension intentionally avoids.
+// Note: there is no per-turn state to refresh anymore (ON is the only state and
+// it changes only through explicit user actions). We therefore don't subscribe
+// to GENERATION_ENDED — which in Lumiverse 1.0 would require the broad
+// `generation` permission this extension intentionally avoids.
 
 // ===== Interceptor =====
 spindle.permissions.onDenied(({ permission, operation }) => {
@@ -758,110 +752,86 @@ spindle.registerInterceptor(async (messages, context) => {
   const chatId = ctx?.chatId || currentChatId || 'default';
   if (chatId !== currentChatId) currentChatId = chatId;
 
-  const state = peekChatState(chatId);
   const view = getModesView(chatId);
 
-  // Include modes that are ON, or OFF but still in countdown (lingering)
-  const modesToInclude = view.filter((m) => {
-    if (m.status === 'ON') return true;
-    if (m.status === 'OFF' && state[m.name]?.countdown !== undefined) return true;
-    return false;
-  });
+  // Only ON modes are injected. A mode that is off has no line at all — its
+  // absence is what "off" means. No status text, no "[OFF]", nothing to plant.
+  const onModes = view.filter((m) => m.status === 'ON');
 
-  if (modesToInclude.length > 0 && messages.length > 0) {
+  if (onModes.length > 0 && messages.length > 0) {
     const mergeFormat = config.mergeFormat || DEFAULT_MERGE_FORMAT;
-    const lines = modesToInclude.map((m) => {
-      const displayStatus = m.status;
-
-      // Deterministic mode: ON is strictly ON, no probability roll.
-      // Otherwise apply the per-mode schedule mask as before.
-      let finalStatus = displayStatus;
+    const lines: string[] = [];
+    for (const m of onModes) {
+      // Schedule mask (skipped in deterministic mode): a failed roll simply
+      // omits this mode's line this turn — fade by omission, never by "[OFF]".
       if (!config.deterministic) {
         const schedule = m.schedule || 'X';
         const tickChar = schedule[tick % schedule.length];
         const prob = parseInt(tickChar.replace('X', '10').replace('-', '0')) * 10;
         const active = Math.round(Math.random() * 100) <= prob;
-        finalStatus = (displayStatus === 'ON' && !active) ? 'OFF' : displayStatus;
+        if (!active) continue;
       }
-
-      return mergeFormat
+      lines.push(mergeFormat
         .replaceAll('{{modeName}}', m.name)
-        .replaceAll('{{displayStatus}}', finalStatus)
-        .replaceAll('{{modeDescription}}', m.description);
-    });
-
-    const pre = (config.preFraming ?? DEFAULT_PRE_FRAMING).trim();
-    const post = (config.postFraming ?? DEFAULT_POST_FRAMING).trim();
-    let modeText = '\n' + pre + '\n\n' + lines.join('\n') + '\n\n' + post + '\n';
-
-    // Resolve Lumiverse macros ({{char}}, {{user}}, etc.) in the final text.
-    // characterId is inferred from chatId by the macro engine.
-    try {
-      const resolved = await spindle.macros.resolve(modeText, { chatId });
-      if (resolved?.text) modeText = resolved.text;
-    } catch {
-      // macros API unavailable — inject unresolved
+        .replaceAll('{{displayStatus}}', 'ON')
+        .replaceAll('{{modeDescription}}', m.description));
     }
 
-    const position = config.injectionPosition || 'prepend';
-    const role = config.injectionRole || 'system';
+    if (lines.length > 0) {
+      const pre = (config.preFraming ?? DEFAULT_PRE_FRAMING).trim();
+      const post = (config.postFraming ?? DEFAULT_POST_FRAMING).trim();
+      let modeText = '\n' + pre + '\n\n' + lines.join('\n') + '\n\n' + post + '\n';
 
-    if (position === 'prepend') {
-      // Prepend to last user message (always user)
-      for (let i = messages.length - 1; i >= 0; i--) {
-        if (messages[i].role === 'user') {
-          messages[i].content = modeText + '\n' + messages[i].content;
-          break;
-        }
+      // Resolve Lumiverse macros ({{char}}, {{user}}, etc.) in the final text.
+      // characterId is inferred from chatId by the macro engine.
+      try {
+        const resolved = await spindle.macros.resolve(modeText, { chatId });
+        if (resolved?.text) modeText = resolved.text;
+      } catch {
+        // macros API unavailable — inject unresolved
       }
-    } else if (position === 'append') {
-      // Append to last user message (always user)
-      for (let i = messages.length - 1; i >= 0; i--) {
-        if (messages[i].role === 'user') {
-          messages[i].content = messages[i].content + '\n' + modeText;
-          break;
+
+      const position = config.injectionPosition || 'prepend';
+      const role = config.injectionRole || 'system';
+
+      if (position === 'prepend') {
+        // Prepend to last user message (always user)
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (messages[i].role === 'user') {
+            messages[i].content = modeText + '\n' + messages[i].content;
+            break;
+          }
         }
-      }
-    } else if (position === 'before_user') {
-      // Insert separate message before last user message
-      for (let i = messages.length - 1; i >= 0; i--) {
-        if (messages[i].role === 'user') {
-          messages.splice(i, 0, { role, content: modeText });
-          break;
+      } else if (position === 'append') {
+        // Append to last user message (always user)
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (messages[i].role === 'user') {
+            messages[i].content = messages[i].content + '\n' + modeText;
+            break;
+          }
         }
+      } else if (position === 'before_user') {
+        // Insert separate message before last user message
+        for (let i = messages.length - 1; i >= 0; i--) {
+          if (messages[i].role === 'user') {
+            messages.splice(i, 0, { role, content: modeText });
+            break;
+          }
+        }
+      } else if (position === 'start') {
+        // Insert as first message
+        messages.unshift({ role, content: modeText });
+      } else if (position === 'end') {
+        // Insert as last message
+        messages.push({ role, content: modeText });
       }
-    } else if (position === 'start') {
-      // Insert as first message
-      messages.unshift({ role, content: modeText });
-    } else if (position === 'end') {
-      // Insert as last message
-      messages.push({ role, content: modeText });
     }
 
     tick++;
   }
 
-  // Tick down countdowns for OFF modes and clean up expired ones
-  const removed: string[] = [];
-  for (const [name, st] of Object.entries(state)) {
-    if (st.status === 'OFF' && st.countdown !== undefined) {
-      st.countdown--;
-      if (st.countdown <= 0) { delete state[name]; removed.push(name); }
-    }
-  }
-
-  if (removed.length) toast.info(`Cleared ${removed.length} mode(s) from memory`);
-
-  // If the countdown sweep emptied this chat's bucket, drop it so it doesn't
-  // linger as drift. It's recreated only when a mode is actually toggled on.
-  if (config.chatStates[chatId] && Object.keys(config.chatStates[chatId]).length === 0) {
-    delete config.chatStates[chatId];
-  }
-
-  saveConfig();
-  // Push updated countdowns to the UI here, since we no longer rely on the
-  // permission-gated GENERATION_ENDED event for the refresh.
-  sendStateToFrontend();
+  // Nothing to persist or refresh per-turn: ON is the only state, and it only
+  // changes through explicit user actions (which already save + refresh).
   return messages;
 });
 
