@@ -343,9 +343,60 @@ function sendStateToFrontend(): void {
       sortMode: config.sortMode,
     },
   });
+
+  // Keep the {{modes}} macro value in sync with the current chat's ON modes.
+  void pushModesMacro();
 }
 
-// ===== Message Handler from Frontend =====
+// ===== {{modes}} macro (push model) =====
+// Exposes the current chat's ON modes as a macro the user can place anywhere in
+// their Loom preset (e.g. inside a System block), instead of relying on fixed
+// injection. Outputs ONLY the mode descriptions, blank-line separated, with no
+// framing — the user writes any framing around the tag in their prompt.
+
+// Raw text: all ON modes for the chat, blank line between each. No scheduling
+// (always all ON modes) and no framing.
+function buildModesRawText(chatId: string): string {
+  const onModes = getModesView(chatId).filter((m) => m.status === 'ON');
+  if (onModes.length === 0) return '';
+  return onModes.map((m) => m.description).join('\n\n');
+}
+
+// Resolve {{user}}/{{char}} etc. in the raw text so the pushed value is
+// ready-to-use (we don't depend on the host re-resolving inside the tag).
+async function resolveModesText(
+  chatId: string,
+  userId: string | undefined,
+): Promise<string> {
+  let text = buildModesRawText(chatId);
+  if (!text) return '';
+  // {{user}} = active persona name; operator-scoped installs need the userId.
+  if (text.includes('{{user}}')) {
+    try {
+      const persona = await spindle.personas.getActive(userId);
+      if (persona?.name) text = text.replaceAll('{{user}}', persona.name);
+    } catch (e) {
+      spindle.log.warn(`[modes macro] persona lookup failed: ${e}`);
+    }
+  }
+  try {
+    const resolved = await spindle.macros.resolve(text, { chatId, userId });
+    if (resolved?.text) text = resolved.text;
+  } catch (e) {
+    spindle.log.warn(`[modes macro] resolve failed: ${e}`);
+  }
+  return text;
+}
+
+// Compute and push the current value for the active chat. Fire-and-forget.
+async function pushModesMacro(): Promise<void> {
+  try {
+    const text = await resolveModesText(currentChatId, currentUserId);
+    spindle.updateMacroValue('modes', text);
+  } catch (e) {
+    spindle.log.warn(`[modes macro] push failed: ${e}`);
+  }
+}
 spindle.onFrontendMessage(async (payload: any, userId?: string) => {
   // Capture userId for operator-scoped extensions
   if (userId && userId !== currentUserId) currentUserId = userId;
@@ -909,5 +960,16 @@ spindle.registerInterceptor(async (messages, context) => {
   // Resolve the real active chatId immediately
   currentChatId = await resolveActiveChatId();
 
-  sendStateToFrontend();
+  // Register the {{modes}} macro (push model — value supplied via
+  // updateMacroValue whenever modes/chat change, including from sendStateToFrontend).
+  spindle.registerMacro({
+    name: 'modes',
+    category: 'extension:mode_toggles',
+    description:
+      "Active Mode Toggles modes for the current chat, blank-line separated. Place {{modes}} anywhere in your preset.",
+    returnType: 'string',
+    handler: '',
+  });
+
+  sendStateToFrontend(); // also performs the initial {{modes}} push
 })();
