@@ -847,6 +847,19 @@ spindle.registerInterceptor(async (messages, context) => {
       const position = config.injectionPosition || 'prepend';
       const role = config.injectionRole || 'system';
 
+      // DIAGNOSTIC: the UI setting and the observed behavior disagree, so log
+      // what the code actually runs with and what the message array looks like
+      // right before/after injecting — position, role, message count, and the
+      // role + content type of the last few messages.
+      spindle.log.info(
+        `Injection: position=${position} role=${role} msgCountBefore=${messages.length} ` +
+          `lastRoles=[${messages.slice(-3).map((m) => m.role).join(',')}] ` +
+          `contentTypes=[${messages
+            .slice(-3)
+            .map((m) => (Array.isArray(m.content) ? 'array' : typeof m.content))
+            .join(',')}]`,
+      );
+
       if (position === 'prepend') {
         // Prepend to last user message (always user)
         for (let i = messages.length - 1; i >= 0; i--) {
