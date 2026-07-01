@@ -316,80 +316,12 @@ export function setup(ctx: SpindleFrontendContext) {
     sortSection.append(sortLbl, sortSelect);
     container.appendChild(sortSection);
 
-    // Pre-framing
-    container.appendChild(
-      labeledTextarea('Text before mode content', state.settings.preFraming, (val) =>
-        send({ type: 'update_settings', preFraming: val }))
-    );
-
-    // Merge format
-    container.appendChild(
-      labeledTextarea('Merge format ({{modeName}}, {{displayStatus}}, {{modeDescription}})',
-        state.settings.mergeFormat, (val) =>
-          send({ type: 'update_settings', mergeFormat: val }))
-    );
-
-    // Post-framing
-    container.appendChild(
-      labeledTextarea('Text after mode content', state.settings.postFraming, (val) =>
-        send({ type: 'update_settings', postFraming: val }))
-    );
-
-    // Injection Position
-    const posSection = mkEl('div', 'mt-section');
-    const posLbl = document.createElement('small');
-    posLbl.className = 'mt-small-label';
-    posLbl.textContent = 'Injection position';
-    const posSelect = document.createElement('select') as HTMLSelectElement;
-    posSelect.className = 'mt-select';
-    const posOptions: [string, string][] = [
-      ['prepend', 'Prepend to user message'],
-      ['append', 'Append to user message'],
-      ['before_user', 'New message before user message'],
-      ['start', 'New message at start'],
-      ['end', 'New message at end'],
-    ];
-    for (const [val, label] of posOptions) {
-      const opt = document.createElement('option');
-      opt.value = val;
-      opt.textContent = label;
-      if (val === state.settings.injectionPosition) opt.selected = true;
-      posSelect.appendChild(opt);
-    }
-    posSection.append(posLbl, posSelect);
-    container.appendChild(posSection);
-
-    // Injection Role (only for positions that create a new message)
-    const roleSection = mkEl('div', 'mt-section');
-    const roleLbl = document.createElement('small');
-    roleLbl.className = 'mt-small-label';
-    roleLbl.textContent = 'Injected message role';
-    const roleSelect = document.createElement('select') as HTMLSelectElement;
-    roleSelect.className = 'mt-select';
-    const roleOptions: [string, string][] = [
-      ['system', 'System'],
-      ['user', 'User'],
-      ['assistant', 'Assistant'],
-    ];
-    for (const [val, label] of roleOptions) {
-      const opt = document.createElement('option');
-      opt.value = val;
-      opt.textContent = label;
-      if (val === state.settings.injectionRole) opt.selected = true;
-      roleSelect.appendChild(opt);
-    }
-    roleSelect.addEventListener('change', () =>
-      send({ type: 'update_settings', injectionRole: roleSelect.value }));
-    roleSection.append(roleLbl, roleSelect);
-
-    // Show/hide role based on position
-    const needsRole = (pos: string) => pos !== 'prepend' && pos !== 'append';
-    roleSection.style.display = needsRole(state.settings.injectionPosition) ? '' : 'none';
-    posSelect.addEventListener('change', () => {
-      send({ type: 'update_settings', injectionPosition: posSelect.value });
-      roleSection.style.display = needsRole(posSelect.value) ? '' : 'none';
-    });
-    container.appendChild(roleSection);
+    // Modes are inserted via the {{modes}} macro now (fixed injection removed).
+    const macroHint = document.createElement('small');
+    macroHint.className = 'mt-small-label';
+    macroHint.textContent =
+      'Tip: place {{modes}} anywhere in your preset (e.g. a System block) to insert your active modes. Add any framing text around it yourself.';
+    container.appendChild(macroHint);
 
     // Buttons
     const btnRow = mkEl('div', 'mt-btn-row');
