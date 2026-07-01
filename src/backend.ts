@@ -739,6 +739,7 @@ spindle.permissions.onDenied(({ permission, operation }) => {
 // connectionId, personaId, generationType and activatedWorldInfo (Lumiverse 1.0).
 interface InterceptorContext {
   chatId?: string;
+  personaId?: string;
   generationType?: string;
 }
 
@@ -782,13 +783,43 @@ spindle.registerInterceptor(async (messages, context) => {
       const post = (config.postFraming ?? DEFAULT_POST_FRAMING).trim();
       let modeText = '\n' + pre + '\n\n' + lines.join('\n') + '\n\n' + post + '\n';
 
-      // Resolve Lumiverse macros ({{char}}, {{user}}, etc.) in the final text.
-      // characterId is inferred from chatId by the macro engine.
+      // Resolve {{user}} ourselves first. The macro engine binds character and
+      // chat context from chatId, but NOT the active persona, so {{user}} would
+      // otherwise reach the model as the literal string "{{user}}" (and the model
+      // then invents a stranger by that name). We have the active persona id on
+      // the interceptor context; look up its name and substitute it in before
+      // handing the rest of the text to the engine.
+      if (modeText.includes('{{user}}')) {
+        try {
+          const persona = ctx.personaId
+            ? await spindle.personas.get(ctx.personaId)
+            : await spindle.personas.getActive();
+          if (persona?.name) {
+            modeText = modeText.replaceAll('{{user}}', persona.name);
+          } else {
+            spindle.log.warn('No active persona found; {{user}} left unresolved');
+          }
+        } catch (e) {
+          spindle.log.warn(`Persona lookup failed for {{user}}: ${e}`);
+        }
+      }
+
+      // Resolve the remaining Lumiverse macros ({{char}}, etc.) in the final
+      // text. characterId is inferred from chatId by the macro engine.
       try {
         const resolved = await spindle.macros.resolve(modeText, { chatId });
         if (resolved?.text) modeText = resolved.text;
-      } catch {
-        // macros API unavailable — inject unresolved
+        // Surface macro-engine warnings instead of swallowing them, so an
+        // unresolved token shows up in the logs rather than silently shipping.
+        if (resolved?.diagnostics?.length) {
+          spindle.log.warn(
+            `Macro resolve diagnostics: ${JSON.stringify(resolved.diagnostics)}`,
+          );
+        }
+      } catch (e) {
+        // Don't fail generation if the macro API is unavailable — inject the
+        // text unresolved, but log it rather than swallowing the error silently.
+        spindle.log.warn(`Macro resolve failed, injecting unresolved: ${e}`);
       }
 
       const position = config.injectionPosition || 'prepend';
