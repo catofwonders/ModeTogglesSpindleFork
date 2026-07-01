@@ -750,20 +750,24 @@ spindle.registerInterceptor(async (messages, context) => {
 
   const ctx = context as InterceptorContext;
 
-  // DIAGNOSTIC: the interceptor context is typed `unknown` by the host and the
-  // docs field list may be incomplete. On operator-scoped installs the persona
-  // and macro APIs need a userId, so log exactly what the runtime hands us here
-  // to see whether a userId (or something we can resolve one from) is present.
+  // DIAGNOSTIC: confirm we have a userId to resolve persona/macros with. The
+  // interceptor context never carries one on operator-scoped installs, so we
+  // rely on currentUserId captured from frontend messages (set elsewhere).
   spindle.log.info(
-    `Interceptor ctx keys=${JSON.stringify(Object.keys(ctx || {}))} userId=${
-      ctx?.userId ?? '(none)'
-    } connectionId=${ctx?.connectionId ?? '(none)'} personaId=${ctx?.personaId ?? '(none)'}`,
+    `Interceptor: chatId=${ctx?.chatId ?? '(none)'} personaId=${
+      ctx?.personaId ?? '(none)'
+    } currentUserId=${currentUserId ?? '(none)'}`,
   );
 
   // Use generation context's chatId as source of truth; it's the actual chat
   // this generation is for, regardless of any UI state drift.
   const chatId = ctx?.chatId || currentChatId || 'default';
   if (chatId !== currentChatId) currentChatId = chatId;
+
+  // The active persona / user identity for operator-scoped resolution. The
+  // interceptor context doesn't provide it, so use the userId captured from
+  // frontend traffic; fall back to ctx.userId in case a host version supplies it.
+  const userId = currentUserId ?? ctx?.userId;
 
   const view = getModesView(chatId);
 
@@ -804,11 +808,11 @@ spindle.registerInterceptor(async (messages, context) => {
       if (modeText.includes('{{user}}')) {
         try {
           // On operator-scoped installs the persona API needs an explicit
-          // userId. Pass ctx.userId when the runtime provides one; on
-          // user-scoped installs it's undefined and inferred automatically.
+          // userId (the one captured from frontend traffic above). On user-scoped
+          // installs it's undefined and the host infers it automatically.
           const persona = ctx.personaId
-            ? await spindle.personas.get(ctx.personaId, ctx.userId)
-            : await spindle.personas.getActive(ctx.userId);
+            ? await spindle.personas.get(ctx.personaId, userId)
+            : await spindle.personas.getActive(userId);
           if (persona?.name) {
             modeText = modeText.replaceAll('{{user}}', persona.name);
           } else {
@@ -824,7 +828,7 @@ spindle.registerInterceptor(async (messages, context) => {
       try {
         const resolved = await spindle.macros.resolve(modeText, {
           chatId,
-          userId: ctx.userId,
+          userId,
         });
         if (resolved?.text) modeText = resolved.text;
         // Surface macro-engine warnings instead of swallowing them, so an
