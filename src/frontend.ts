@@ -19,11 +19,6 @@ interface StateUpdate {
   undoLabel: string;
   settings: {
     loadCoreModes: boolean;
-    preFraming: string;
-    mergeFormat: string;
-    postFraming: string;
-    injectionPosition: string;
-    injectionRole: string;
     deterministic: boolean;
     sortMode: 'group' | 'flat';
   };

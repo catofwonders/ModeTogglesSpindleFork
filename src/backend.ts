@@ -29,11 +29,6 @@ interface ModeView extends ModeDefinition {
 interface Config {
   enabled: boolean;
   loadCoreModes: boolean;
-  preFraming: string;
-  mergeFormat: string;
-  postFraming: string;
-  injectionPosition: 'prepend' | 'append' | 'before_user' | 'start' | 'end';
-  injectionRole: 'system' | 'user' | 'assistant';
   deterministic: boolean;
   sortMode: 'group' | 'flat';
   modeOverrides: Record<string, { description: string; group: string }>;
@@ -42,22 +37,11 @@ interface Config {
 }
 
 // ===== Constants =====
-// Assertion register: state what is true of the scene, never what to suppress.
-const DEFAULT_PRE_FRAMING =
-  'The following are true of this scene right now. Write everything in accordance with them:';
-const DEFAULT_MERGE_FORMAT = '{{modeDescription}}';
-const DEFAULT_POST_FRAMING =
-  'Render these as lived reality, not as instructions. Never name, list, or acknowledge them.';
 
 // ===== State =====
 let config: Config = {
   enabled: true,
   loadCoreModes: true,
-  preFraming: DEFAULT_PRE_FRAMING,
-  mergeFormat: DEFAULT_MERGE_FORMAT,
-  postFraming: DEFAULT_POST_FRAMING,
-  injectionPosition: 'prepend',
-  injectionRole: 'system',
   deterministic: false,
   sortMode: 'group',
   modeOverrides: {},
@@ -334,11 +318,6 @@ function sendStateToFrontend(): void {
     undoLabel: lastUndo && lastUndo.chatId === currentChatId ? lastUndo.label : '',
     settings: {
       loadCoreModes: config.loadCoreModes,
-      preFraming: config.preFraming,
-      mergeFormat: config.mergeFormat,
-      postFraming: config.postFraming,
-      injectionPosition: config.injectionPosition,
-      injectionRole: config.injectionRole,
       deterministic: config.deterministic,
       sortMode: config.sortMode,
     },
@@ -437,11 +416,6 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
 
     case 'update_settings':
       if (payload.loadCoreModes !== undefined) config.loadCoreModes = payload.loadCoreModes;
-      if (payload.preFraming !== undefined) config.preFraming = payload.preFraming;
-      if (payload.mergeFormat !== undefined) config.mergeFormat = payload.mergeFormat;
-      if (payload.postFraming !== undefined) config.postFraming = payload.postFraming;
-      if (payload.injectionPosition !== undefined) config.injectionPosition = payload.injectionPosition;
-      if (payload.injectionRole !== undefined) config.injectionRole = payload.injectionRole;
       if (payload.deterministic !== undefined) config.deterministic = !!payload.deterministic;
       if (payload.sortMode !== undefined) config.sortMode = payload.sortMode === 'flat' ? 'flat' : 'group';
       await saveConfig();
@@ -539,11 +513,6 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       const exportObj = {
         enabled: config.enabled,
         loadCoreModes: config.loadCoreModes,
-        preFraming: config.preFraming,
-        mergeFormat: config.mergeFormat,
-        postFraming: config.postFraming,
-        injectionPosition: config.injectionPosition,
-        injectionRole: config.injectionRole,
         modeOverrides: config.modeOverrides,
         presets: config.presets,
       };
@@ -560,11 +529,6 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       // Selectively apply known fields, preserving chatStates
       if (typeof incoming.enabled === 'boolean') config.enabled = incoming.enabled;
       if (typeof incoming.loadCoreModes === 'boolean') config.loadCoreModes = incoming.loadCoreModes;
-      if (typeof incoming.preFraming === 'string') config.preFraming = incoming.preFraming;
-      if (typeof incoming.mergeFormat === 'string') config.mergeFormat = incoming.mergeFormat;
-      if (typeof incoming.postFraming === 'string') config.postFraming = incoming.postFraming;
-      if (typeof incoming.injectionPosition === 'string') config.injectionPosition = incoming.injectionPosition as any;
-      if (typeof incoming.injectionRole === 'string') config.injectionRole = incoming.injectionRole as any;
       if (incoming.modeOverrides && typeof incoming.modeOverrides === 'object') {
         config.modeOverrides = incoming.modeOverrides;
       }
@@ -598,9 +562,6 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       const preservedPresets = config.presets;
       config = {
         enabled: true, loadCoreModes: true,
-        preFraming: DEFAULT_PRE_FRAMING, mergeFormat: DEFAULT_MERGE_FORMAT,
-        postFraming: DEFAULT_POST_FRAMING,
-        injectionPosition: 'prepend', injectionRole: 'system',
         deterministic: false, sortMode: 'group',
         modeOverrides: {}, chatStates: {}, presets: preservedPresets,
       };
