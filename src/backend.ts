@@ -18,18 +18,15 @@ interface ModeDefinition {
 
 interface ModeState {
   status: 'OFF' | 'ON';
-  schedule?: string;
 }
 
 interface ModeView extends ModeDefinition {
   status: string;
-  schedule?: string;
 }
 
 interface Config {
   enabled: boolean;
   loadCoreModes: boolean;
-  deterministic: boolean;
   sortMode: 'group' | 'flat';
   modeOverrides: Record<string, { description: string; group: string }>;
   chatStates: Record<string, Record<string, ModeState>>;
@@ -42,7 +39,6 @@ interface Config {
 let config: Config = {
   enabled: true,
   loadCoreModes: true,
-  deterministic: false,
   sortMode: 'group',
   modeOverrides: {},
   chatStates: {},
@@ -50,7 +46,6 @@ let config: Config = {
 };
 
 let coreModes: ModeDefinition[] = [];
-let tick = 0;
 let currentChatId = 'default';
 let currentUserId: string | undefined;
 
@@ -81,8 +76,11 @@ async function loadConfig(): Promise<void> {
     const states = config.chatStates[chatId];
     for (const [name, st] of Object.entries(states)) {
       if ((st.status as string) === 'Activating') { st.status = 'ON'; dirty = true; }
-      const anyState = st as { countdown?: number };
+      const anyState = st as { countdown?: number; schedule?: string };
       if (anyState.countdown !== undefined) { delete anyState.countdown; dirty = true; }
+      // Schedule masks were removed: the {{modes}} macro emits all ON modes
+      // every turn, so a per-mode probability string had nothing to act on.
+      if (anyState.schedule !== undefined) { delete anyState.schedule; dirty = true; }
       if (st.status !== 'ON') { delete states[name]; dirty = true; }
     }
     if (Object.keys(states).length === 0) { delete config.chatStates[chatId]; dirty = true; }
@@ -92,9 +90,13 @@ async function loadConfig(): Promise<void> {
     delete config.chatStates['default'];
     dirty = true;
   }
-  // Drop the dead 'countdown' key from older configs.
+  // Drop dead top-level keys from older configs.
   if ((config as { countdown?: number }).countdown !== undefined) {
     delete (config as { countdown?: number }).countdown;
+    dirty = true;
+  }
+  if ((config as { deterministic?: boolean }).deterministic !== undefined) {
+    delete (config as { deterministic?: boolean }).deterministic;
     dirty = true;
   }
   if (dirty) saveConfig();
@@ -218,7 +220,6 @@ function getModesView(chatId: string): ModeView[] {
       description: m.description,
       group: m.group || 'Unsorted',
       status: s?.status ?? 'OFF',
-      schedule: s?.schedule,
     };
   });
 }
@@ -318,7 +319,6 @@ function sendStateToFrontend(): void {
     undoLabel: lastUndo && lastUndo.chatId === currentChatId ? lastUndo.label : '',
     settings: {
       loadCoreModes: config.loadCoreModes,
-      deterministic: config.deterministic,
       sortMode: config.sortMode,
     },
   });
@@ -400,7 +400,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         delete state[payload.modeName];
         if (Object.keys(state).length === 0) delete config.chatStates[chatId];
       } else {
-        state[payload.modeName] = { status: 'ON', schedule: state[payload.modeName]?.schedule || 'X' };
+        state[payload.modeName] = { status: 'ON' };
       }
       await saveConfig();
       sendStateToFrontend();
@@ -416,7 +416,6 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
 
     case 'update_settings':
       if (payload.loadCoreModes !== undefined) config.loadCoreModes = payload.loadCoreModes;
-      if (payload.deterministic !== undefined) config.deterministic = !!payload.deterministic;
       if (payload.sortMode !== undefined) config.sortMode = payload.sortMode === 'flat' ? 'flat' : 'group';
       await saveConfig();
       sendStateToFrontend();
@@ -562,7 +561,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       const preservedPresets = config.presets;
       config = {
         enabled: true, loadCoreModes: true,
-        deterministic: false, sortMode: 'group',
+        sortMode: 'group',
         modeOverrides: {}, chatStates: {}, presets: preservedPresets,
       };
       lastUndo = null;
@@ -596,23 +595,10 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       if (inactive.length === 0) { toast.info('No inactive modes available'); return; }
       const pick = inactive[Math.floor(Math.random() * inactive.length)];
       const st = getChatState(chatId);
-      st[pick.name] = { status: 'ON', schedule: st[pick.name]?.schedule || 'X' };
+      st[pick.name] = { status: 'ON' };
       await saveConfig();
       sendStateToFrontend();
       toast.success(`Randomly activated: ${pick.name}`);
-      break;
-    }
-
-    case 'update_schedules': {
-      const st = peekChatState(chatId);
-      for (const [modeName, schedule] of Object.entries(payload.schedules as Record<string, string>)) {
-        if (st[modeName]) {
-          let val = schedule.toUpperCase().replace(/[^\-X0-9]/g, '');
-          st[modeName].schedule = val || 'X';
-        }
-      }
-      await saveConfig();
-      sendStateToFrontend();
       break;
     }
 
@@ -650,12 +636,12 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
           }
         }
       }
-      // Turn ON all preset modes (preserves existing schedule if present)
+      // Turn ON all preset modes
       let activated = 0;
       for (const modeName of preset.modes) {
         const prev = st[modeName];
         const wasOn = prev?.status === 'ON';
-        st[modeName] = { status: 'ON', schedule: prev?.schedule || 'X' };
+        st[modeName] = { status: 'ON' };
         if (!wasOn) activated++;
       }
       lastUndo = { chatId, label: `Load "${name}"`, states: undoSnapshot };
@@ -733,7 +719,6 @@ spindle.on('CHAT_CHANGED', async (data) => {
   const resolved = await resolveActiveChatId(hint);
   if (resolved === currentChatId) return;
   currentChatId = resolved;
-  tick = 0;
   sendStateToFrontend();
 });
 

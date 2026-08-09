@@ -5,7 +5,6 @@ interface ModeView {
   group: string;
   description: string;
   status: string;
-  schedule?: string;
 }
 
 interface StateUpdate {
@@ -19,7 +18,6 @@ interface StateUpdate {
   undoLabel: string;
   settings: {
     loadCoreModes: boolean;
-    deterministic: boolean;
     sortMode: 'group' | 'flat';
   };
 }
@@ -98,7 +96,6 @@ export function setup(ctx: SpindleFrontendContext) {
     .mt-action-import { background: rgba(255,165,0,0.08); color: #FFA500; }
     .mt-action-disable { background: rgba(255,0,0,0.08); color: #FF6B6B; }
     .mt-action-random { background: rgba(128,0,128,0.08); color: #DA70D6; }
-    .mt-action-schedule { background: rgba(137,112,218,0.08); color: #8970da; }
     .mt-action-presets { background: rgba(255,215,0,0.08); color: #FFD700; }
     .mt-action-config-export { background: rgba(0,200,200,0.08); color: #5FD4D4; }
     .mt-action-config-import { background: rgba(0,200,200,0.08); color: #5FD4D4; }
@@ -124,12 +121,6 @@ export function setup(ctx: SpindleFrontendContext) {
     .mt-modal { background: #1a1a1a; border: 1px solid var(--lumiverse-border, #444);
       border-radius: 8px; padding: 16px; max-width: 500px; width: 90%; max-height: 80vh; overflow-y: auto;
       color: var(--lumiverse-text, #ddd); }
-    .mt-schedule-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    .mt-schedule-table th, .mt-schedule-table td { padding: 6px 8px; text-align: left;
-      border-bottom: 1px solid var(--lumiverse-border, #333); }
-    .mt-schedule-input { width: 100%; padding: 4px 6px; border-radius: var(--lumiverse-radius, 3px);
-      border: 1px solid var(--lumiverse-border, #444); background: var(--lumiverse-fill-subtle, #222);
-      color: var(--lumiverse-text, #ddd); font-family: monospace; box-sizing: border-box; }
   `);
 
   // ===== Drawer Tab: Settings =====
@@ -276,17 +267,6 @@ export function setup(ctx: SpindleFrontendContext) {
       send({ type: 'update_settings', loadCoreModes: coreCb.checked }));
     coreLabel.append(coreCb, document.createTextNode(' Load Core (Default) Modes'));
     container.appendChild(coreLabel);
-
-    // Deterministic mode
-    const detLabel = mkEl('label', 'mt-label');
-    const detCb = document.createElement('input');
-    detCb.type = 'checkbox';
-    detCb.checked = state.settings.deterministic;
-    detCb.addEventListener('change', () =>
-      send({ type: 'update_settings', deterministic: detCb.checked }));
-    detLabel.append(detCb, document.createTextNode(' Deterministic (ignore schedules — ON is always ON)'));
-    detLabel.title = 'When enabled, an active mode is injected every turn with no probability roll. Schedule masks are ignored.';
-    container.appendChild(detLabel);
 
     // Sort order
     const sortSection = mkEl('div', 'mt-section');
@@ -472,7 +452,6 @@ export function setup(ctx: SpindleFrontendContext) {
       send({ type: 'disable_all' })));
     row2.appendChild(actionBtn('Random', 'mt-action-random', () =>
       send({ type: 'activate_random' })));
-    row2.appendChild(actionBtn('Schedule', 'mt-action-schedule', showScheduleDialog));
     row2.appendChild(actionBtn('Presets', 'mt-action-presets', showPresetsDialog));
     container.appendChild(row2);
 
@@ -734,94 +713,6 @@ export function setup(ctx: SpindleFrontendContext) {
     }
   }
 
-  function showScheduleDialog() {
-    if (!state) return;
-    const activeModes = state.modes.filter(
-      (m) => m.status === 'ON'
-    );
-    if (activeModes.length === 0) {
-      showThemedAlert('No active modes to schedule.');
-      return;
-    }
-
-    const overlay = document.createElement('div');
-    overlay.className = 'mt-overlay';
-
-    const modal = document.createElement('div');
-    modal.className = 'mt-modal';
-
-    const title = document.createElement('h3');
-    title.style.cssText = 'margin:0 0 8px';
-    title.textContent = 'Mode Scheduling';
-    modal.appendChild(title);
-
-    if (state.settings.deterministic) {
-      const note = document.createElement('div');
-      note.style.cssText = 'margin:0 0 10px;padding:6px 8px;border-radius:4px;background:rgba(255,200,0,0.10);color:#FFD45F;font-size:11px;';
-      note.textContent = 'Deterministic mode is ON — schedules are currently ignored (active modes fire every turn). Turn it off in settings to use schedules.';
-      modal.appendChild(note);
-    }
-
-    const help = document.createElement('small');
-    help.style.cssText = 'display:block;margin-bottom:12px;color:var(--lumiverse-text-muted,#999)';
-    help.textContent = 'Each character: X=100%, - or 0=0%, 1-9=probability\u00d710%. Mask repeats in a loop.';
-    modal.appendChild(help);
-
-    const table = document.createElement('table');
-    table.className = 'mt-schedule-table';
-    const thead = document.createElement('thead');
-    thead.innerHTML = '<tr><th>Mode</th><th>Schedule</th></tr>';
-    table.appendChild(thead);
-    const tbody = document.createElement('tbody');
-
-    const inputs: { name: string; input: HTMLInputElement }[] = [];
-    for (const mode of activeModes) {
-      const tr = document.createElement('tr');
-      const tdName = document.createElement('td');
-      const strong = document.createElement('strong');
-      strong.textContent = mode.name;
-      const br = document.createElement('br');
-      const small = document.createElement('small');
-      small.textContent = mode.description;
-      tdName.append(strong, br, small);
-      const tdInput = document.createElement('td');
-      const inp = document.createElement('input') as HTMLInputElement;
-      inp.type = 'text';
-      inp.className = 'mt-schedule-input';
-      inp.value = mode.schedule || 'X';
-      inp.addEventListener('input', () => {
-        inp.value = inp.value.toUpperCase().replace(/[^\-X0-9]/g, '');
-      });
-      tdInput.appendChild(inp);
-      tr.append(tdName, tdInput);
-      tbody.appendChild(tr);
-      inputs.push({ name: mode.name, input: inp });
-    }
-    table.appendChild(tbody);
-    modal.appendChild(table);
-
-    const btnRow = document.createElement('div');
-    btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:12px;';
-    const cancelBtn = document.createElement('button');
-    cancelBtn.className = 'mt-btn';
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.addEventListener('click', () => overlay.remove());
-    const saveBtn = document.createElement('button');
-    saveBtn.className = 'mt-btn';
-    saveBtn.textContent = 'Save';
-    saveBtn.addEventListener('click', () => {
-      const schedules: Record<string, string> = {};
-      for (const { name, input } of inputs) schedules[name] = input.value || 'X';
-      send({ type: 'update_schedules', schedules });
-      overlay.remove();
-    });
-    btnRow.append(cancelBtn, saveBtn);
-    modal.appendChild(btnRow);
-
-    overlay.appendChild(modal);
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-    document.body.appendChild(overlay);
-  }
 
   // ===== Presets Dialog =====
   function showPresetsDialog() {
