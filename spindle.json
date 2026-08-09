@@ -5,13 +5,24 @@
   "author": "catofwonders",
   "github": "https://github.com/catofwonders/ModeTogglesSpindleFork",
   "homepage": "https://github.com/catofwonders/ModeTogglesSpindleFork",
-  "description": "Toggle non-diegetic modifier modes that get injected into your prompts. Modes can be grouped, scheduled, imported/exported, and configured per-chat.",
-  "permissions": ["interceptor", "chats", "personas"],
+  "description": "Toggle non-diegetic modifier modes and expose them to your prompts via the {{modes}} macro. Modes can be grouped, imported/exported, saved as presets, and configured per-chat.",
+  "permissions": [
+    "chats",
+    "personas"
+  ],
   "entry_backend": "dist/backend.js",
   "entry_frontend": "dist/frontend.js",
   "minimum_lumiverse_version": "1.0.0",
   "storage_seed_files": [
-    { "from": "defaults/modes/", "to": "modes/", "overwrite": false },
-    { "from": "defaults/config.json", "to": "config.json", "overwrite": false }
+    {
+      "from": "defaults/modes/",
+      "to": "modes/",
+      "overwrite": false
+    },
+    {
+      "from": "defaults/config.json",
+      "to": "config.json",
+      "overwrite": false
+    }
   ]
 }

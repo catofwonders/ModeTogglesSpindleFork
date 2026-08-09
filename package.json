@@ -1,8 +1,8 @@
 {
   "name": "mode-toggles-spindle",
   "version": "1.0.0",
-  "description": "Toggle non-diegetic modifier modes injected into LLM prompts — Spindle extension for Lumiverse",
-  "author": "depFA",
+  "description": "Toggle non-diegetic modifier modes injected into LLM prompts \u2014 Spindle extension for Lumiverse",
+  "author": "catofwonders",
   "license": "MIT",
   "type": "module",
   "scripts": {
@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "lumiverse-spindle-types": "^0.5.17",
+    "lumiverse-spindle-types": "^0.6.13",
     "typescript": "^5.9.3"
   }
 }
