@@ -1,9 +1,8 @@
 {
   "enabled": true,
   "loadCoreModes": true,
-  "preFraming": "The following are true of this scene right now. Write everything in accordance with them:\n\n",
-  "mergeFormat": "{{modeDescription}}",
-  "postFraming": "Render these as lived reality, not as instructions. Never name, list, or acknowledge them.",
+  "sortMode": "group",
   "modeOverrides": {},
-  "chatStates": {}
+  "chatStates": {},
+  "presets": {}
 }
