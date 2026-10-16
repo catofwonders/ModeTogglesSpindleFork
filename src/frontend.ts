@@ -573,22 +573,26 @@ export function setup(ctx: SpindleFrontendContext) {
         if (!fams.has(f)) fams.set(f, []);
         fams.get(f)!.push(m);
       }
-      type Entry = { sortKey: string; el: () => HTMLElement };
-      const entries: Entry[] = [];
-      for (const m of items) {
+      const loose = items.filter((m) => {
         const f = familyOf(m.name);
-        if (f && fams.get(f)!.length >= 2) continue;
-        entries.push({ sortKey: m.name, el: () => renderModeButton(m) });
+        return !f || fams.get(f)!.length < 2;
+      });
+      const familyNames = Array.from(fams.keys())
+        .filter((f) => fams.get(f)!.length >= 2)
+        .sort(naturalCompare);
+      if (familyNames.length === 0) {
+        // No families in this group (e.g. the built-in groups): plain list.
+        for (const m of loose) content.appendChild(renderModeButton(m));
+      } else {
+        // Modes without a family go under one "General" header at the top,
+        // so they don't sit expanded between the family headers.
+        if (loose.length > 0) {
+          content.appendChild(renderAccordion('General', loose, true, { key: `${key}::General`, nested: true }));
+        }
+        for (const f of familyNames) {
+          content.appendChild(renderAccordion(f, fams.get(f)!, true, { key: `${key}::${f}`, nested: true }));
+        }
       }
-      for (const [f, list] of fams) {
-        if (list.length < 2) continue;
-        entries.push({
-          sortKey: f,
-          el: () => renderAccordion(f, list, true, { key: `${key}::${f}`, nested: true }),
-        });
-      }
-      entries.sort((a, b) => naturalCompare(a.sortKey, b.sortKey));
-      for (const e of entries) content.appendChild(e.el());
     } else {
       for (const mode of items) content.appendChild(renderModeButton(mode));
     }
