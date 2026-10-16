@@ -1,4 +1,5 @@
 import type { SpindleFrontendContext } from 'lumiverse-spindle-types';
+import { tokenize, scoreMode, naturalCompare, familyOf } from './search';
 
 interface ModeView {
   name: string;
@@ -78,6 +79,10 @@ export function setup(ctx: SpindleFrontendContext) {
       margin-bottom: 2px; }
     .mt-accordion-header:hover { border-color: var(--lumiverse-border-hover, #555); }
     .mt-accordion-content { padding-left: 6px; }
+    .mt-accordion-sub { font-size: 11px; background: transparent; padding: 4px 8px;
+      border-left: 2px solid var(--lumiverse-border, #444); border-radius: 0; }
+    .mt-no-results { padding: 12px 8px; font-size: 12px; text-align: center;
+      color: var(--lumiverse-text-muted, #999); }
     .mt-mode-btn { cursor: pointer; padding: 6px 10px;
       border-bottom: 1px solid var(--lumiverse-border, #333);
       font-size: 12px; border-radius: var(--lumiverse-radius, 3px); margin-bottom: 2px; }
@@ -396,6 +401,7 @@ export function setup(ctx: SpindleFrontendContext) {
     search.value = searchQuery;
     search.addEventListener('input', () => {
       searchQuery = search.value.trim().toLowerCase();
+      listEl.scrollTop = 0;
       renderModeList(listEl);
     });
     search.addEventListener('keydown', (e) => {
@@ -422,10 +428,20 @@ export function setup(ctx: SpindleFrontendContext) {
     container.innerHTML = '';
     if (!state) return;
 
-    const q = searchQuery;
-    const filtered = state.modes.filter((m) =>
-      !q || `${m.name} ${m.group} ${m.description}`.toLowerCase().includes(q)
-    );
+    // Word-by-word, typo-tolerant search (see search.ts). Every word must
+    // match somewhere; results are ranked with name matches first.
+    const tokens = tokenize(searchQuery);
+    const searching = tokens.length > 0;
+    const scores = new Map<string, number>();
+    const filtered = state.modes.filter((m) => {
+      const s = scoreMode(m, tokens);
+      if (s > 0) scores.set(m.name, s);
+      return s > 0;
+    });
+    const order = (a: ModeView, b: ModeView) =>
+      searching
+        ? (scores.get(b.name)! - scores.get(a.name)!) || naturalCompare(a.name, b.name)
+        : naturalCompare(a.name, b.name);
 
     if (!state.enabled) {
       const banner = mkEl('div');
@@ -438,26 +454,37 @@ export function setup(ctx: SpindleFrontendContext) {
     const isActiveish = (m: ModeView) => m.status === 'ON';
 
     // Enabled section
-    const enabled = filtered.filter(isActiveish).sort((a, b) => a.name.localeCompare(b.name));
+    const enabled = filtered.filter(isActiveish).sort(order);
     if (enabled.length > 0) {
-      container.appendChild(renderAccordion('Enabled', enabled));
+      container.appendChild(renderAccordion('Enabled', enabled, false, { forceOpen: searching }));
     }
 
-    if (state.settings.sortMode === 'flat') {
-      // One predictable A→Z list of everything.
-      const all = filtered.slice().sort((a, b) => a.name.localeCompare(b.name));
-      if (all.length > 0) container.appendChild(renderAccordion('All Modes', all, true));
+    if (searching && filtered.length === 0) {
+      const none = mkEl('div', 'mt-no-results');
+      none.textContent = 'No modes match. Try fewer or different words.';
+      container.appendChild(none);
+    } else if (state.settings.sortMode === 'flat') {
+      // One predictable A→Z list of everything (ranked while searching).
+      const all = filtered.slice().sort(order);
+      if (all.length > 0) container.appendChild(renderAccordion('All Modes', all, true, { forceOpen: searching }));
     } else {
-      // Group sections — groups A→Z, modes A→Z within each.
       const groupsMap = new Map<string, ModeView[]>();
       for (const mode of filtered) {
         const g = mode.group || 'Unsorted';
         if (!groupsMap.has(g)) groupsMap.set(g, []);
         groupsMap.get(g)!.push(mode);
       }
-      for (const gName of Array.from(groupsMap.keys()).sort()) {
-        const items = groupsMap.get(gName)!.sort((a, b) => a.name.localeCompare(b.name));
-        container.appendChild(renderAccordion(gName, items, true));
+      // Browsing: groups A→Z, split into families ("Tech Era", "Tiny Treatment"...).
+      // Searching: groups with the best match first, open, ranked flat inside.
+      const best = (g: string) => Math.max(...groupsMap.get(g)!.map((m) => scores.get(m.name) || 0));
+      const groupNames = Array.from(groupsMap.keys()).sort((a, b) =>
+        searching ? (best(b) - best(a)) || naturalCompare(a, b) : naturalCompare(a, b));
+      for (const gName of groupNames) {
+        const items = groupsMap.get(gName)!.sort(order);
+        container.appendChild(renderAccordion(gName, items, true, {
+          forceOpen: searching,
+          families: !searching,
+        }));
       }
     }
 
@@ -504,10 +531,16 @@ export function setup(ctx: SpindleFrontendContext) {
     container.appendChild(row3);
   }
 
-  function renderAccordion(title: string, items: ModeView[], showActiveCount = false): HTMLElement {
+  function renderAccordion(
+    title: string,
+    items: ModeView[],
+    showActiveCount = false,
+    opts: { forceOpen?: boolean; families?: boolean; key?: string; nested?: boolean } = {},
+  ): HTMLElement {
+    const key = opts.key ?? title;
     const section = document.createElement('div');
     const header = document.createElement('div');
-    header.className = 'mt-accordion-header';
+    header.className = opts.nested ? 'mt-accordion-header mt-accordion-sub' : 'mt-accordion-header';
     if (showActiveCount) {
       const active = items.filter((m) => m.status === 'ON').length;
       header.textContent = title;
@@ -520,15 +553,45 @@ export function setup(ctx: SpindleFrontendContext) {
     }
     const content = document.createElement('div');
     content.className = 'mt-accordion-content';
-    content.style.display = accordionOpen[title] ? 'block' : 'none';
+    // While searching, sections with matches open automatically; the saved
+    // open/closed state comes back once the search is cleared.
+    content.style.display = opts.forceOpen || accordionOpen[key] ? 'block' : 'none';
 
     header.addEventListener('click', () => {
       const open = content.style.display === 'none';
       content.style.display = open ? 'block' : 'none';
-      accordionOpen[title] = open;
+      if (!opts.forceOpen) accordionOpen[key] = open;
     });
 
-    for (const mode of items) content.appendChild(renderModeButton(mode));
+    if (opts.families) {
+      // Modes named "<Family> <number>: <title>" are gathered under a family
+      // sub-header; a family needs at least two members to get one.
+      const fams = new Map<string, ModeView[]>();
+      for (const m of items) {
+        const f = familyOf(m.name);
+        if (!f) continue;
+        if (!fams.has(f)) fams.set(f, []);
+        fams.get(f)!.push(m);
+      }
+      type Entry = { sortKey: string; el: () => HTMLElement };
+      const entries: Entry[] = [];
+      for (const m of items) {
+        const f = familyOf(m.name);
+        if (f && fams.get(f)!.length >= 2) continue;
+        entries.push({ sortKey: m.name, el: () => renderModeButton(m) });
+      }
+      for (const [f, list] of fams) {
+        if (list.length < 2) continue;
+        entries.push({
+          sortKey: f,
+          el: () => renderAccordion(f, list, true, { key: `${key}::${f}`, nested: true }),
+        });
+      }
+      entries.sort((a, b) => naturalCompare(a.sortKey, b.sortKey));
+      for (const e of entries) content.appendChild(e.el());
+    } else {
+      for (const mode of items) content.appendChild(renderModeButton(mode));
+    }
     section.append(header, content);
     return section;
   }
