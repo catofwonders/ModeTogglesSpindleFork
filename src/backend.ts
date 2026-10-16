@@ -22,6 +22,8 @@ interface ModeState {
 
 interface ModeView extends ModeDefinition {
   status: string;
+  // 'core' = built-in, 'override' = built-in edited by the user, 'custom' = user-made
+  source: 'core' | 'override' | 'custom';
 }
 
 interface Config {
@@ -213,13 +215,16 @@ function peekChatState(chatId: string): Record<string, ModeState> {
 function getModesView(chatId: string): ModeView[] {
   const effective = getEffectiveModes();
   const state = peekChatState(chatId);
+  const coreNames = new Set(coreModes.map((m) => m.name));
   return effective.map((m) => {
     const s = state[m.name];
+    const overridden = !!config.modeOverrides[m.name];
     return {
       name: m.name,
       description: m.description,
       group: m.group || 'Unsorted',
       status: s?.status ?? 'OFF',
+      source: !overridden ? 'core' : coreNames.has(m.name) ? 'override' : 'custom',
     };
   });
 }
@@ -242,6 +247,23 @@ function normalizeGroup(raw: string): string {
     if (g.toLowerCase() === lc) return g;
   }
   return cleaned;
+}
+
+// Mode names and groups are stored as "Name - Group - Description" lines on
+// export, so they can't contain the " - " separator or the line won't round-trip.
+function validateModeFields(name: string, group: string): string | null {
+  if (!name) return 'Mode name is required';
+  if (name.includes(' - ')) return 'Mode name cannot contain " - "';
+  if (group.includes(' - ')) return 'Group cannot contain " - "';
+  if (group.includes(',')) return 'Group cannot contain commas';
+  if (group.length > 40) return 'Group must be 40 characters or fewer';
+  if (group.includes('{{')) return 'Group cannot contain macros';
+  return null;
+}
+
+// Export descriptions on a single line so they re-import cleanly.
+function oneLine(text: string): string {
+  return text.replace(/\s*\n\s*/g, ' ').trim();
 }
 
 interface TidyReport {
@@ -336,6 +358,8 @@ function sendStateToFrontend(): void {
 // Raw text: all ON modes for the chat, blank line between each. No scheduling
 // (always all ON modes) and no framing.
 function buildModesRawText(chatId: string): string {
+  // Master switch: when Mode Toggles is disabled the macro emits nothing.
+  if (!config.enabled) return '';
   const onModes = getModesView(chatId).filter((m) => m.status === 'ON');
   if (onModes.length === 0) return '';
   return onModes.map((m) => m.description).join('\n\n');
@@ -359,7 +383,7 @@ async function resolveModesText(
     }
   }
   try {
-    const resolved = await spindle.macros.resolve(text, { chatId, userId });
+    const resolved = await spindle.macros.resolve(text, { chatId, userId, commit: false });
     if (resolved?.text) text = resolved.text;
   } catch (e) {
     spindle.log.warn(`[modes macro] resolve failed: ${e}`);
@@ -368,9 +392,14 @@ async function resolveModesText(
 }
 
 // Compute and push the current value for the active chat. Fire-and-forget.
+// Pushes are async (macro resolution awaits the host), so two quick toggles can
+// finish out of order. Only the newest request is allowed to push its value.
+let macroPushSeq = 0;
 async function pushModesMacro(): Promise<void> {
+  const seq = ++macroPushSeq;
   try {
     const text = await resolveModesText(currentChatId, currentUserId);
+    if (seq !== macroPushSeq) return; // a newer push superseded this one
     spindle.updateMacroValue('modes', text);
   } catch (e) {
     spindle.log.warn(`[modes macro] push failed: ${e}`);
@@ -392,7 +421,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
     }
 
     case 'toggle_mode': {
-      if (!config.enabled) return;
+      if (!config.enabled) { toast.warning('Mode Toggles is disabled — enable it in the drawer tab'); return; }
       const state = getChatState(chatId);
       const isOn = (state[payload.modeName]?.status ?? 'OFF') === 'ON';
       if (isOn) {
@@ -421,24 +450,46 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       sendStateToFrontend();
       break;
 
-    case 'add_edit_mode': {
-      if (!payload.name) return;
-      if (!payload.description) {
-        delete config.modeOverrides[payload.name];
-        const isDefault = coreModes.some((m) => m.name === payload.name);
-        if (!isDefault) {
-          for (const chatId of Object.keys(config.chatStates)) {
-            delete config.chatStates[chatId][payload.name];
-          }
-        }
-        toast.success(`Mode "${payload.name}" override removed`);
-      } else {
-        config.modeOverrides[payload.name] = {
-          description: payload.description,
-          group: normalizeGroup(payload.group),
-        };
-        toast.success(`Mode "${payload.name}" saved`);
+    case 'delete_mode': {
+      const name = String(payload.name || '').trim();
+      if (!name) return;
+      const isDefault = coreModes.some((m) => m.name === name);
+      if (!config.modeOverrides[name]) {
+        // Built-in modes without an override have nothing to delete.
+        if (isDefault) toast.info(`"${name}" is a built-in mode and can't be deleted`);
+        return;
       }
+      delete config.modeOverrides[name];
+      if (isDefault) {
+        toast.success(`Mode "${name}" restored to default`);
+      } else {
+        // Custom mode is gone for good: drop its toggles and any emptied buckets.
+        for (const cid of Object.keys(config.chatStates)) {
+          delete config.chatStates[cid][name];
+          if (Object.keys(config.chatStates[cid]).length === 0) delete config.chatStates[cid];
+        }
+        toast.success(`Mode "${name}" deleted`);
+      }
+      await saveConfig();
+      sendStateToFrontend();
+      break;
+    }
+
+    case 'add_edit_mode': {
+      const name = String(payload.name || '').trim();
+      const description = String(payload.description || '').trim();
+      const rawGroup = String(payload.group || '').trim();
+      if (!name) return;
+      if (!description) {
+        // Older frontends sent an empty description to mean "delete".
+        // Never treat a blank save as a deletion; require explicit delete_mode.
+        toast.error('Description is required');
+        return;
+      }
+      const err = validateModeFields(name, rawGroup);
+      if (err) { toast.error(err); return; }
+      config.modeOverrides[name] = { description, group: normalizeGroup(rawGroup) };
+      toast.success(`Mode "${name}" saved`);
       await saveConfig();
       sendStateToFrontend();
       break;
@@ -488,7 +539,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
           group = 'Unsorted';
           description = (parts[1] || '').trim();
         } else { errors++; continue; }
-        if (!name || !description) { errors++; continue; }
+        if (!name || !description || validateModeFields(name, group)) { errors++; continue; }
         config.modeOverrides[name] = { description, group: normalizeGroup(group) };
         imported++;
       }
@@ -496,12 +547,15 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       sendStateToFrontend();
       if (imported > 0) toast.success(`Imported ${imported} mode(s)`);
       if (errors > 0) toast.warning(`${errors} line(s) skipped due to format errors`);
+      if (imported === 0 && errors === 0) {
+        toast.warning('No modes found. Each line should look like: Name - Group - Description');
+      }
       break;
     }
 
     case 'export_modes': {
       const lines = Object.entries(config.modeOverrides).map(
-        ([name, ov]) => `${name} - ${ov.group || 'Unsorted'} - ${ov.description}`
+        ([name, ov]) => `${name} - ${ov.group || 'Unsorted'} - ${oneLine(ov.description)}`
       );
       spindle.sendToFrontend({ type: 'export_data', text: lines.join('\n'), count: lines.length });
       break;
@@ -512,6 +566,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       const exportObj = {
         enabled: config.enabled,
         loadCoreModes: config.loadCoreModes,
+        sortMode: config.sortMode,
         modeOverrides: config.modeOverrides,
         presets: config.presets,
       };
@@ -528,12 +583,32 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       // Selectively apply known fields, preserving chatStates
       if (typeof incoming.enabled === 'boolean') config.enabled = incoming.enabled;
       if (typeof incoming.loadCoreModes === 'boolean') config.loadCoreModes = incoming.loadCoreModes;
+      if (incoming.sortMode === 'group' || incoming.sortMode === 'flat') config.sortMode = incoming.sortMode;
+      // Validate shapes: a malformed entry would otherwise print "undefined"
+      // into {{modes}} or crash Tidy.
+      let skipped = 0;
       if (incoming.modeOverrides && typeof incoming.modeOverrides === 'object') {
-        config.modeOverrides = incoming.modeOverrides;
+        const clean: Config['modeOverrides'] = {};
+        for (const [name, ov] of Object.entries(incoming.modeOverrides as Record<string, any>)) {
+          const desc = typeof ov?.description === 'string' ? ov.description.trim() : '';
+          const grp = typeof ov?.group === 'string' ? ov.group.trim() : '';
+          if (!name.trim() || !desc || validateModeFields(name.trim(), grp)) { skipped++; continue; }
+          clean[name.trim()] = { description: desc, group: grp || 'Unsorted' };
+        }
+        config.modeOverrides = clean;
       }
       if (incoming.presets && typeof incoming.presets === 'object') {
-        config.presets = incoming.presets;
+        const clean: Config['presets'] = {};
+        for (const [key, p] of Object.entries(incoming.presets as Record<string, any>)) {
+          const modes = Array.isArray(p?.modes) ? p.modes.filter((m: unknown) => typeof m === 'string') : null;
+          const pname = typeof p?.name === 'string' && p.name.trim() ? p.name.trim() : key;
+          if (!modes || modes.length === 0) { skipped++; continue; }
+          clean[pname] = { name: pname, modes };
+        }
+        config.presets = clean;
       }
+      lastUndo = null;
+      if (skipped > 0) toast.warning(`${skipped} invalid entr${skipped === 1 ? 'y' : 'ies'} skipped`);
       await saveConfig();
       sendStateToFrontend();
       toast.success('Config imported successfully');
@@ -556,7 +631,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       break;
     }
 
-    case 'reset_defaults':
+    case 'reset_defaults': {
       // Preserve user's presets — they represent meaningful work.
       const preservedPresets = config.presets;
       config = {
@@ -569,9 +644,10 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       sendStateToFrontend();
       toast.success('Extension reset to defaults');
       break;
+    }
 
     case 'disable_all': {
-      if (!config.enabled) return;
+      if (!config.enabled) { toast.warning('Mode Toggles is disabled — enable it in the drawer tab'); return; }
       const st = peekChatState(chatId);
       const snapshot = JSON.parse(JSON.stringify(st));
       const onNames = Object.keys(st).filter((n) => st[n].status === 'ON');
@@ -589,7 +665,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
     }
 
     case 'activate_random': {
-      if (!config.enabled) return;
+      if (!config.enabled) { toast.warning('Mode Toggles is disabled — enable it in the drawer tab'); return; }
       const view = getModesView(chatId);
       const inactive = view.filter((m) => m.status === 'OFF');
       if (inactive.length === 0) { toast.info('No inactive modes available'); return; }
@@ -606,8 +682,9 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       const name = (payload.name || '').trim();
       if (!name) { toast.error('Preset name required'); return; }
       const st = peekChatState(chatId);
+      const known = knownModeNames();
       const onModes = Object.entries(st)
-        .filter(([, s]) => s.status === 'ON')
+        .filter(([n, s]) => s.status === 'ON' && known.has(n))
         .map(([n]) => n);
       if (onModes.length === 0) { toast.warning('No modes are active to save'); return; }
       config.presets[name] = { name, modes: onModes };
@@ -618,7 +695,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
     }
 
     case 'load_preset': {
-      if (!config.enabled) return;
+      if (!config.enabled) { toast.warning('Mode Toggles is disabled — enable it in the drawer tab'); return; }
       const name = payload.name;
       const mergeMode = payload.mergeMode === 'merge' ? 'merge' : 'replace';
       const preset = config.presets[name];
@@ -636,9 +713,13 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
           }
         }
       }
-      // Turn ON all preset modes
+      // Turn ON all preset modes that still exist (deleted modes would just
+      // become orphan toggles and inflate the "activated" count).
+      const known = knownModeNames();
       let activated = 0;
+      let missing = 0;
       for (const modeName of preset.modes) {
+        if (!known.has(modeName)) { missing++; continue; }
         const prev = st[modeName];
         const wasOn = prev?.status === 'ON';
         st[modeName] = { status: 'ON' };
@@ -649,6 +730,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       sendStateToFrontend();
       const verb = mergeMode === 'replace' ? 'Loaded' : 'Merged';
       toast.success(`${verb} "${name}" — ${activated} mode${activated === 1 ? '' : 's'} activated · undo available`);
+      if (missing > 0) toast.warning(`${missing} mode(s) in this preset no longer exist — run Tidy to clean up`);
       break;
     }
 

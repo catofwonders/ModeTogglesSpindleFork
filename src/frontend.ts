@@ -5,6 +5,7 @@ interface ModeView {
   group: string;
   description: string;
   status: string;
+  source?: 'core' | 'override' | 'custom';
 }
 
 interface StateUpdate {
@@ -150,29 +151,17 @@ export function setup(ctx: SpindleFrontendContext) {
       updateBadge();
       renderSettingsTab();
       if (activePopover && document.body.contains(activePopover)) {
-        renderPopoverContent(activePopover);
+        refreshPopoverList();
       }
     } else if (payload.type === 'export_data') {
       const data = payload as ExportData;
-      const blob = new Blob([data.text], { type: 'text/plain' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'mode-toggles-export.txt';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      if (data.count === 0) {
+        showThemedAlert('You have no custom or edited modes to export yet.');
+        return;
+      }
+      downloadText(data.text, 'mode-toggles-export.txt', 'text/plain');
     } else if (payload.type === 'export_config_data') {
-      const blob = new Blob([payload.json], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'mode-toggles-config.json';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      downloadText(payload.json, 'mode-toggles-config.json', 'application/json');
     } else if (payload.type === 'tidy_report') {
       const r = payload.report as {
         orphanToggles: number; emptyPresets: number; deadPresetRefs: number; emptyChatBuckets: number;
@@ -213,6 +202,30 @@ export function setup(ctx: SpindleFrontendContext) {
 
   // ===== Active popover tracking =====
   let activePopover: HTMLElement | null = null;
+  let activeListEl: HTMLElement | null = null;
+  let popoverCloseHandler: ((e: MouseEvent) => void) | null = null;
+  let popoverKeyHandler: ((e: KeyboardEvent) => void) | null = null;
+  // Timestamp of the last outside-click close. Clicking the input bar button
+  // while the popover is open fires the outside-click close first and then the
+  // button's onClick, which used to reopen it immediately.
+  let lastOutsideCloseAt = 0;
+
+  function closePopover() {
+    if (popoverCloseHandler) document.removeEventListener('click', popoverCloseHandler, true);
+    if (popoverKeyHandler) document.removeEventListener('keydown', popoverKeyHandler, true);
+    popoverCloseHandler = null;
+    popoverKeyHandler = null;
+    if (activePopover) activePopover.remove();
+    activePopover = null;
+    activeListEl = null;
+  }
+
+  function refreshPopoverList() {
+    if (!activeListEl) return;
+    const scroll = activeListEl.scrollTop;
+    renderModeList(activeListEl);
+    activeListEl.scrollTop = scroll;
+  }
 
   function updateBadge() {
     if (tab && state) {
@@ -311,7 +324,7 @@ export function setup(ctx: SpindleFrontendContext) {
     resetBtn.className = 'mt-btn';
     resetBtn.textContent = 'Reset to Defaults';
     resetBtn.addEventListener('click', () => {
-      showThemedConfirm('Reset all settings, custom modes, and per-chat states?', () =>
+      showThemedConfirm('Reset all settings, custom modes, and per-chat states? Your presets will be kept.', () =>
         send({ type: 'reset_defaults' }));
     });
     btnRow.append(removeBtn, resetBtn);
@@ -323,10 +336,10 @@ export function setup(ctx: SpindleFrontendContext) {
   // ===== Toggle Popover (via Input Bar Action) =====
   function showTogglePopover() {
     if (activePopover && document.body.contains(activePopover)) {
-      activePopover.remove();
-      activePopover = null;
+      closePopover();
       return;
     }
+    if (Date.now() - lastOutsideCloseAt < 300) return; // this click just closed it
 
     // Ask backend for fresh state (detects chat switches)
     send({ type: 'request_state' });
@@ -343,13 +356,27 @@ export function setup(ctx: SpindleFrontendContext) {
     document.body.appendChild(popover);
 
     const closeHandler = (e: MouseEvent) => {
-      if (!popover.contains(e.target as Node)) {
-        popover.remove();
-        activePopover = null;
-        document.removeEventListener('click', closeHandler, true);
-      }
+      const target = e.target as HTMLElement | null;
+      if (popover.contains(target)) return;
+      // Our own dialogs (Add/Edit, Presets, confirms) sit outside the popover;
+      // working in them shouldn't close it.
+      if (target?.closest?.('.mt-overlay')) return;
+      lastOutsideCloseAt = Date.now();
+      closePopover();
     };
-    setTimeout(() => document.addEventListener('click', closeHandler, true), 50);
+    const keyHandler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || document.querySelector('.mt-overlay')) return;
+      // First Escape clears the search (handled by the input); a second one closes.
+      if (searchQuery) return;
+      closePopover();
+    };
+    popoverCloseHandler = closeHandler;
+    popoverKeyHandler = keyHandler;
+    setTimeout(() => {
+      if (activePopover !== popover) return; // closed before the listener attached
+      document.addEventListener('click', closeHandler, true);
+      document.addEventListener('keydown', keyHandler, true);
+    }, 50);
   }
 
   function renderPopoverContent(container: HTMLElement) {
@@ -372,7 +399,10 @@ export function setup(ctx: SpindleFrontendContext) {
       renderModeList(listEl);
     });
     search.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') { searchQuery = ''; search.value = ''; renderModeList(listEl); }
+      if (e.key === 'Escape' && searchQuery) {
+        e.stopPropagation();
+        searchQuery = ''; search.value = ''; renderModeList(listEl);
+      }
     });
     header.appendChild(search);
     container.appendChild(header);
@@ -380,6 +410,7 @@ export function setup(ctx: SpindleFrontendContext) {
     // Mode list
     const listEl = document.createElement('div');
     listEl.style.cssText = 'max-height:380px;overflow-y:auto;padding:4px;background:#1a1a1a;';
+    activeListEl = listEl;
     renderModeList(listEl);
     container.appendChild(listEl);
 
@@ -395,6 +426,14 @@ export function setup(ctx: SpindleFrontendContext) {
     const filtered = state.modes.filter((m) =>
       !q || `${m.name} ${m.group} ${m.description}`.toLowerCase().includes(q)
     );
+
+    if (!state.enabled) {
+      const banner = mkEl('div');
+      banner.style.cssText = 'padding:6px 8px;margin-bottom:4px;font-size:11px;border-radius:3px;' +
+        'background:rgba(255,165,0,0.10);color:#FFA500;';
+      banner.textContent = 'Mode Toggles is disabled, so {{modes}} is empty. Enable it in the Mode Toggles drawer tab.';
+      container.appendChild(banner);
+    }
 
     const isActiveish = (m: ModeView) => m.status === 'ON';
 
@@ -633,15 +672,30 @@ export function setup(ctx: SpindleFrontendContext) {
     const saveBtn = document.createElement('button');
     saveBtn.className = 'mt-btn';
     saveBtn.textContent = 'Save';
+    const errorEl = document.createElement('div');
+    errorEl.style.cssText = 'color:#FF6B6B;font-size:11px;min-height:14px;margin-top:6px;';
+    modal.appendChild(errorEl);
+
     saveBtn.addEventListener('click', () => {
-      const name = nameInput.value.trim();
-      if (!name) return;
+      let name = nameInput.value.trim();
       const group = groupInput.value.trim() || 'Unsorted';
       const description = descInput.value.trim();
-      // When adding new, warn if name already exists
-      if (!prefill && state && state.modes.some((m) => m.name.toLowerCase() === name.toLowerCase())) {
-        showThemedConfirm(`A mode called "${name}" already exists. Overwrite it?`, () => {
-          send({ type: 'add_edit_mode', name, group, description });
+      const err = !name ? 'Name is required.'
+        : !description ? 'Description is required. This text is what {{modes}} sends to the model.'
+        : name.includes(' - ') ? 'Name cannot contain " - " (it separates fields on export).'
+        : group.includes(' - ') ? 'Group cannot contain " - ".'
+        : group.includes(',') ? 'Group cannot contain commas.'
+        : group.length > 40 ? 'Group must be 40 characters or fewer.'
+        : '';
+      if (err) { errorEl.textContent = err; return; }
+      // When adding new, warn if the name already exists. Mode names are
+      // case-sensitive keys, so reuse the existing spelling to really overwrite it.
+      const existing = !prefill && state
+        ? state.modes.find((m) => m.name.toLowerCase() === name.toLowerCase())
+        : undefined;
+      if (existing) {
+        showThemedConfirm(`A mode called "${existing.name}" already exists. Overwrite it?`, () => {
+          send({ type: 'add_edit_mode', name: existing.name, group, description });
           overlay.remove();
         });
         return;
@@ -650,14 +704,20 @@ export function setup(ctx: SpindleFrontendContext) {
       overlay.remove();
     });
     btnRow.append(cancelBtn, saveBtn);
-    if (prefill) {
+    // Built-in modes can't be deleted; an edited built-in can be restored.
+    const source = prefill ? state?.modes.find((m) => m.name === prefill.name)?.source : undefined;
+    if (prefill && (source === 'custom' || source === 'override')) {
+      const isRestore = source === 'override';
       const deleteBtn = document.createElement('button');
       deleteBtn.className = 'mt-btn';
       deleteBtn.style.cssText = 'background:rgba(255,0,0,0.15);margin-right:auto;';
-      deleteBtn.textContent = 'Delete';
+      deleteBtn.textContent = isRestore ? 'Restore default' : 'Delete';
       deleteBtn.addEventListener('click', () => {
-        showThemedConfirm(`Delete mode "${prefill.name}"?`, () => {
-          send({ type: 'add_edit_mode', name: prefill.name, group: '', description: '' });
+        const msg = isRestore
+          ? `Discard your edits to "${prefill.name}" and restore the built-in version?`
+          : `Delete mode "${prefill.name}"?`;
+        showThemedConfirm(msg, () => {
+          send({ type: 'delete_mode', name: prefill.name });
           overlay.remove();
         });
       });
@@ -908,22 +968,17 @@ export function setup(ctx: SpindleFrontendContext) {
     return e;
   }
 
-  function labeledTextarea(label: string, value: string, onChange: (val: string) => void): HTMLElement {
-    const section = mkEl('div', 'mt-section');
-    const lbl = document.createElement('small');
-    lbl.className = 'mt-small-label';
-    lbl.textContent = label;
-    const ta = document.createElement('textarea') as HTMLTextAreaElement;
-    ta.className = 'mt-textarea';
-    ta.rows = 3;
-    ta.value = value;
-    let debounce: ReturnType<typeof setTimeout>;
-    ta.addEventListener('input', () => {
-      clearTimeout(debounce);
-      debounce = setTimeout(() => onChange(ta.value), 500);
-    });
-    section.append(lbl, ta);
-    return section;
+  function downloadText(text: string, filename: string, mime: string) {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // Revoking synchronously can cancel the download in some browsers.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   function actionBtn(text: string, className: string, onClick: () => void): HTMLElement {
@@ -941,6 +996,6 @@ export function setup(ctx: SpindleFrontendContext) {
     ctx.dom.cleanup();
     if (tab) tab.destroy();
     if (toggleAction) toggleAction.destroy();
-    if (activePopover) { activePopover.remove(); activePopover = null; }
+    closePopover();
   };
 }
