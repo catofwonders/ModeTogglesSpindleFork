@@ -61,7 +61,7 @@ Click the **microchip icon** in the input bar to open the menu.
 - **Search** filters by name, group or description.
 - **Click a mode** to toggle it ON/OFF for the current chat. Click **✎** to edit it.
 - **+ Add New**: create a custom mode (name, group, description).
-- **Export Modes / Import Modes**: save or load your custom modes as a `.txt` file. Import first shows a preview of what will be added, changed, renamed or removed, then lets you choose:
+- **Export Modes / Import Modes**: save or load your custom modes as a `.txt` file. Export lets you pick which groups to include (all are ticked by default). Import first shows a preview of what will be added, changed, renamed or removed, then lets you choose:
   - **Add**: imports the file and leaves everything else as it is.
   - **Replace**: also makes the file's groups match the file exactly. Custom modes in those groups that the file no longer contains are removed, and a mode whose name changed but whose description didn't is treated as a rename, so its chat toggles and presets move to the new name. Other groups and edited built-in modes are never touched.
 - **Disable All**: turn off every active mode in this chat (undoable).
