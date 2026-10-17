@@ -8,7 +8,7 @@ Toggle non-diegetic "modifier" modes on and off per chat, then drop them anywher
 
 - **340+ built-in modes** in groups such as Visual & Aesthetic, Genre & Cinematic, Social & Power, Abstract & Metaphysical, Narrative & Story, Temporal & Physics and more
 - **`{{modes}}` macro**: place your active modes anywhere in your Loom preset instead of a fixed injection point
-- **Macros inside modes**: `{{user}}`, `{{char}}` and other Lumiverse macros in a mode's description are resolved before output
+- **Macros inside modes**: `{{user}}`, `{{char}}` and other Lumiverse macros in a mode's description are resolved fresh at every generation, so `{{char}}` follows whoever is speaking in group chats
 - **Per-chat state**: each chat remembers which modes are ON
 - **Presets**: save the current chat's active modes, then load (replace) or merge them into any chat
 - **Undo**: reverse the last *Disable All* or preset load
@@ -106,7 +106,6 @@ Tips:
 | Permission | Why |
 |---|---|
 | `chats` | Detects the active chat so toggles are stored per chat |
-| `personas` | Resolves `{{user}}` to the active persona's name inside mode descriptions |
 
 ## Extension structure
 
@@ -132,7 +131,7 @@ ModeTogglesSpindleFork/
 **Backend (`src/backend.ts`)**
 - Loads built-in modes from `modes/modes_N.txt` in extension storage, and custom modes and overrides from `config.json`.
 - Stores only the modes that are ON for each chat; OFF is simply absent.
-- Registers the `{{modes}}` macro and pushes a new value with `updateMacroValue` whenever modes or the active chat change. Before pushing, it resolves `{{user}}` and any other macros in the text.
+- Registers the `{{modes}}` macro and pushes a new value with `updateMacroValue` whenever modes or the active chat change. It pushes the descriptions as written; Lumiverse resolves any macros inside them (`{{user}}`, `{{char}}`, `{{random}}`…) during prompt assembly.
 - Handles presets, undo, import/export and tidy actions from the frontend.
 
 **Frontend (`src/frontend.ts`)**

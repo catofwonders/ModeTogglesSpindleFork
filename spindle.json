@@ -7,8 +7,7 @@
   "homepage": "https://github.com/catofwonders/ModeTogglesSpindleFork",
   "description": "Toggle non-diegetic modifier modes and expose them to your prompts via the {{modes}} macro. Modes can be grouped, imported/exported, saved as presets, and configured per-chat.",
   "permissions": [
-    "chats",
-    "personas"
+    "chats"
   ],
   "entry_backend": "dist/backend.js",
   "entry_frontend": "dist/frontend.js",
