@@ -167,6 +167,8 @@ export function setup(ctx: SpindleFrontendContext) {
       downloadText(data.text, 'mode-toggles-export.txt', 'text/plain');
     } else if (payload.type === 'export_config_data') {
       downloadText(payload.json, 'mode-toggles-config.json', 'application/json');
+    } else if (payload.type === 'import_preview') {
+      showImportPreview(payload.text, payload.report);
     } else if (payload.type === 'tidy_report') {
       const r = payload.report as {
         orphanToggles: number; emptyPresets: number; deadPresetRefs: number; emptyChatBuckets: number;
@@ -565,7 +567,7 @@ export function setup(ctx: SpindleFrontendContext) {
 
     if (opts.families) {
       // Modes named "<Family> <number>: <title>" are gathered under a family
-      // sub-header; a family needs at least two members to get one.
+      // sub-header, even a family of one (like a lone master such as "Size Law 0").
       const fams = new Map<string, ModeView[]>();
       for (const m of items) {
         const f = familyOf(m.name);
@@ -575,10 +577,10 @@ export function setup(ctx: SpindleFrontendContext) {
       }
       const loose = items.filter((m) => {
         const f = familyOf(m.name);
-        return !f || fams.get(f)!.length < 2;
+        return !f;
       });
       const familyNames = Array.from(fams.keys())
-        .filter((f) => fams.get(f)!.length >= 2)
+        
         .sort(naturalCompare);
       if (familyNames.length === 0) {
         // No families in this group (e.g. the built-in groups): plain list.
@@ -807,12 +809,92 @@ export function setup(ctx: SpindleFrontendContext) {
       if (files.length > 0) {
         const text = new TextDecoder().decode(files[0].bytes);
         if (text.trim()) {
-          send({ type: 'import_modes', text });
+          // Ask the backend what this import would do before doing it.
+          send({ type: 'import_preview', text });
         }
       }
     } catch (e) {
       // User cancelled or error
     }
+  }
+
+  function showImportPreview(text: string, r: {
+    valid: number; errors: number; groups: string[]; added: number; updated: number;
+    unchanged: number; renamed: Array<{ from: string; to: string }>; removed: string[];
+  }) {
+    if (r.valid === 0) {
+      showThemedAlert(r.errors > 0
+        ? `No valid modes found (${r.errors} line(s) had format errors). Each line should look like: Name - Group - Description`
+        : 'No modes found. Each line should look like: Name - Group - Description');
+      return;
+    }
+    const overlay = document.createElement('div');
+    overlay.className = 'mt-overlay';
+    const modal = document.createElement('div');
+    modal.className = 'mt-modal';
+
+    const title = document.createElement('h3');
+    title.style.cssText = 'margin:0 0 8px';
+    title.textContent = 'Import Modes';
+    modal.appendChild(title);
+
+    const para = (t: string, css = '') => {
+      const el = document.createElement('div');
+      el.style.cssText = 'font-size:12px;margin-bottom:8px;white-space:pre-line;' + css;
+      el.textContent = t;
+      modal.appendChild(el);
+      return el;
+    };
+
+    para(`${r.valid} mode(s) in the file, group(s): ${r.groups.join(', ')}`);
+    const lines = [
+      `${r.added} new`,
+      `${r.updated} changed`,
+      `${r.unchanged} already up to date`,
+    ];
+    if (r.errors) lines.push(`${r.errors} line(s) skipped: format errors`);
+    para('Add or Replace will both import:\n• ' + lines.join('\n• '));
+
+    const hasReplaceWork = r.renamed.length > 0 || r.removed.length > 0;
+    if (hasReplaceWork) {
+      let t = 'Replace will also clean up modes in those groups that the file no longer has:';
+      if (r.renamed.length) {
+        t += `\n• ${r.renamed.length} of the new ones are renames of existing modes. Replace removes the old name and moves its chat toggles and presets to the new one (Add would leave both):`;
+        for (const x of r.renamed.slice(0, 8)) t += `\n    ${x.from}  →  ${x.to}`;
+        if (r.renamed.length > 8) t += `\n    …and ${r.renamed.length - 8} more`;
+      }
+      if (r.removed.length) {
+        t += `\n• ${r.removed.length} removed:`;
+        for (const n of r.removed.slice(0, 8)) t += `\n    ${n}`;
+        if (r.removed.length > 8) t += `\n    …and ${r.removed.length - 8} more`;
+      }
+      t += '\nOther groups and edited built-in modes are not touched.';
+      para(t, 'max-height:35vh;overflow-y:auto;padding:6px;border:1px solid var(--lumiverse-border,#444);border-radius:4px;');
+    } else {
+      para('Nothing would be renamed or removed, so Add and Replace do the same thing.', 'color:var(--lumiverse-text-muted,#999)');
+    }
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:12px;';
+    const mk = (label: string, onClick: () => void, css = '') => {
+      const b = document.createElement('button');
+      b.className = 'mt-btn';
+      b.textContent = label;
+      if (css) b.style.cssText = css;
+      b.addEventListener('click', onClick);
+      btnRow.appendChild(b);
+    };
+    mk('Cancel', () => overlay.remove());
+    mk('Add', () => { send({ type: 'import_modes', text, mode: 'add' }); overlay.remove(); });
+    if (hasReplaceWork) {
+      mk('Replace', () => { send({ type: 'import_modes', text, mode: 'replace' }); overlay.remove(); },
+        'background:rgba(255,165,0,0.15)');
+    }
+    modal.appendChild(btnRow);
+
+    overlay.appendChild(modal);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
   }
 
   async function doImportConfig() {

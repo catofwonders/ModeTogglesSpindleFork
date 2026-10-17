@@ -229,6 +229,107 @@ function getModesView(chatId: string): ModeView[] {
   });
 }
 
+// ===== Import planning =====
+// Parses an import file and works out what importing it would change, without
+// changing anything. Used for the preview and for the import itself, so the
+// preview is always exactly what happens.
+interface ImportEntry { name: string; group: string; description: string }
+interface ImportPlan {
+  entries: ImportEntry[];
+  errors: number;
+  groups: string[];
+  added: string[];
+  updated: string[];
+  unchanged: string[];
+  renames: Array<[string, string]>; // [old name, new name]; only applied by Replace
+  removed: string[];                 // only applied by Replace
+}
+
+function parseImportText(text: string): { entries: ImportEntry[]; errors: number } {
+  // Join continuation lines. A valid entry starts with "Name - Group - Desc"
+  // where Group is a short category name (e.g. "Social & Power", not a description fragment).
+  const rawLines = text.replace(/\r/g, '').split('\n');
+  const mergedLines: string[] = [];
+  const looksLikeNewEntry = (line: string): boolean => {
+    if ((line.match(/ - /g) || []).length < 2) return false;
+    const group = (line.split(' - ')[1] || '').trim();
+    if (group.length > 40 || group.length === 0) return false;
+    if (group.includes('{{') || group.includes(',')) return false;
+    return true;
+  };
+  for (const raw of rawLines) {
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+    if (looksLikeNewEntry(trimmed)) mergedLines.push(trimmed);
+    else if (mergedLines.length > 0) mergedLines[mergedLines.length - 1] += ' ' + trimmed;
+  }
+  const byName = new Map<string, ImportEntry>(); // a later duplicate line wins
+  let errors = 0;
+  for (const line of mergedLines) {
+    const parts = line.split(' - ');
+    const name = parts[0]?.trim();
+    let group: string, description: string;
+    if (parts.length >= 3) {
+      group = (parts[1] || '').trim() || 'Unsorted';
+      description = parts.slice(2).join(' - ').trim();
+    } else if (parts.length === 2) {
+      group = 'Unsorted';
+      description = (parts[1] || '').trim();
+    } else { errors++; continue; }
+    if (!name || !description || validateModeFields(name, group)) { errors++; continue; }
+    byName.set(name, { name, group, description });
+  }
+  return { entries: Array.from(byName.values()), errors };
+}
+
+const normDesc = (d: string) => d.replace(/\s+/g, ' ').trim();
+
+function planImport(text: string): ImportPlan {
+  const { entries, errors } = parseImportText(text);
+  const coreNames = new Set(coreModes.map((m) => m.name));
+  const fileNames = new Set(entries.map((e) => e.name));
+  const groups = Array.from(new Set(entries.map((e) => normalizeGroup(e.group))));
+  const groupSet = new Set(groups.map((g) => g.toLowerCase()));
+
+  const added: string[] = [];
+  const updated: string[] = [];
+  const unchanged: string[] = [];
+  for (const e of entries) {
+    const cur = config.modeOverrides[e.name];
+    if (!cur && !coreNames.has(e.name)) added.push(e.name);
+    else if (cur && normDesc(cur.description) === normDesc(e.description)
+      && cur.group.toLowerCase() === normalizeGroup(e.group).toLowerCase()) unchanged.push(e.name);
+    else updated.push(e.name);
+  }
+
+  // Replace only touches user-made modes in the groups this file covers:
+  // other groups and edited built-in modes are left alone.
+  const stale = Object.keys(config.modeOverrides).filter((n) =>
+    !fileNames.has(n) && !coreNames.has(n)
+    && groupSet.has((config.modeOverrides[n].group || 'Unsorted').toLowerCase()));
+
+  // A stale mode whose description exactly matches exactly one newly added
+  // mode (and vice versa) is treated as a rename.
+  const addedByDesc = new Map<string, string[]>();
+  for (const n of added) {
+    const d = normDesc(entries.find((e) => e.name === n)!.description);
+    addedByDesc.set(d, [...(addedByDesc.get(d) || []), n]);
+  }
+  const staleByDesc = new Map<string, string[]>();
+  for (const n of stale) {
+    const d = normDesc(config.modeOverrides[n].description);
+    staleByDesc.set(d, [...(staleByDesc.get(d) || []), n]);
+  }
+  const renames: Array<[string, string]> = [];
+  for (const [d, olds] of staleByDesc) {
+    const news = addedByDesc.get(d);
+    if (olds.length === 1 && news && news.length === 1) renames.push([olds[0], news[0]]);
+  }
+  const renamedOld = new Set(renames.map(([o]) => o));
+  const removed = stale.filter((n) => !renamedOld.has(n));
+  return { entries, errors, groups, added, updated, unchanged, renames, removed };
+}
+
 // ===== Tidiness / Order Helpers =====
 function existingGroupNames(): string[] {
   const set = new Set<string>();
@@ -468,59 +569,68 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       break;
     }
 
+    case 'import_preview': {
+      // Dry run: report what an import would do, change nothing.
+      const plan = planImport(String(payload.text || ''));
+      spindle.sendToFrontend({
+        type: 'import_preview',
+        text: payload.text,
+        report: {
+          valid: plan.entries.length,
+          errors: plan.errors,
+          groups: plan.groups,
+          added: plan.added.length,
+          updated: plan.updated.length,
+          unchanged: plan.unchanged.length,
+          renamed: plan.renames.map(([from, to]) => ({ from, to })),
+          removed: plan.removed,
+        },
+      });
+      break;
+    }
+
     case 'import_modes': {
-      // Pre-process: join continuation lines. A valid entry starts with "Name - Group - Desc"
-      // where Group is a short category name (e.g. "Social & Power", not a description fragment).
-      const rawLines = payload.text.replace(/\r/g, '').split('\n');
-      const mergedLines: string[] = [];
-
-      function looksLikeNewEntry(line: string): boolean {
-        const dashCount = (line.match(/ - /g) || []).length;
-        if (dashCount < 2) return false;
-        // Validate the group field (second part) looks like a real category
-        const parts = line.split(' - ');
-        const group = (parts[1] || '').trim();
-        // Real groups are short category names, not description fragments
-        if (group.length > 40) return false;
-        if (group.includes('{{')) return false;
-        if (group.includes(',')) return false;
-        if (group.length === 0) return false;
-        return true;
+      const plan = planImport(String(payload.text || ''));
+      const replace = payload.mode === 'replace';
+      for (const e of plan.entries) {
+        config.modeOverrides[e.name] = { description: e.description, group: normalizeGroup(e.group) };
       }
-
-      for (const raw of rawLines) {
-        const trimmed = raw.trim();
-        if (!trimmed) continue;
-
-        if (looksLikeNewEntry(trimmed)) {
-          mergedLines.push(trimmed);
-        } else if (mergedLines.length > 0) {
-          mergedLines[mergedLines.length - 1] += ' ' + trimmed;
+      let renamedCount = 0;
+      let removedCount = 0;
+      if (replace) {
+        // Carry renamed modes' toggles and preset entries over to the new name.
+        for (const [from, to] of plan.renames) {
+          for (const states of Object.values(config.chatStates)) {
+            if (states[from]) { states[to] = states[from]; delete states[from]; }
+          }
+          for (const preset of Object.values(config.presets)) {
+            preset.modes = Array.from(new Set(preset.modes.map((n) => (n === from ? to : n))));
+          }
+          delete config.modeOverrides[from];
+          renamedCount++;
         }
-      }
-
-      let imported = 0;
-      let errors = 0;
-      for (const line of mergedLines) {
-        const parts = line.split(' - ');
-        const name = parts[0]?.trim();
-        let group: string, description: string;
-        if (parts.length >= 3) {
-          group = (parts[1] || '').trim() || 'Unsorted';
-          description = parts.slice(2).join(' - ').trim();
-        } else if (parts.length === 2) {
-          group = 'Unsorted';
-          description = (parts[1] || '').trim();
-        } else { errors++; continue; }
-        if (!name || !description || validateModeFields(name, group)) { errors++; continue; }
-        config.modeOverrides[name] = { description, group: normalizeGroup(group) };
-        imported++;
+        // Remove custom modes from the file's groups that the file no longer contains.
+        for (const name of plan.removed) {
+          delete config.modeOverrides[name];
+          for (const cid of Object.keys(config.chatStates)) {
+            delete config.chatStates[cid][name];
+            if (Object.keys(config.chatStates[cid]).length === 0) delete config.chatStates[cid];
+          }
+          removedCount++;
+        }
+        lastUndo = null; // snapshot may reference names that no longer exist
       }
       await saveConfig();
       sendStateToFrontend();
-      if (imported > 0) toast.success(`Imported ${imported} mode(s)`);
-      if (errors > 0) toast.warning(`${errors} line(s) skipped due to format errors`);
-      if (imported === 0 && errors === 0) {
+      const parts: string[] = [];
+      if (plan.added.length) parts.push(`${plan.added.length} added`);
+      if (plan.updated.length) parts.push(`${plan.updated.length} updated`);
+      if (renamedCount) parts.push(`${renamedCount} renamed`);
+      if (removedCount) parts.push(`${removedCount} removed`);
+      if (parts.length) toast.success(`Import: ${parts.join(', ')}`);
+      else if (plan.entries.length) toast.info('Import: everything was already up to date');
+      if (plan.errors > 0) toast.warning(`${plan.errors} line(s) skipped due to format errors`);
+      if (plan.entries.length === 0 && plan.errors === 0) {
         toast.warning('No modes found. Each line should look like: Name - Group - Description');
       }
       break;
