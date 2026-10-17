@@ -637,10 +637,15 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
     }
 
     case 'export_modes': {
-      const lines = Object.entries(config.modeOverrides).map(
-        ([name, ov]) => `${name} - ${ov.group || 'Unsorted'} - ${oneLine(ov.description)}`
-      );
-      spindle.sendToFrontend({ type: 'export_data', text: lines.join('\n'), count: lines.length });
+      // Optional group filter: only export custom modes in the chosen groups.
+      const wanted: Set<string> | null = Array.isArray(payload.groups)
+        ? new Set(payload.groups.map((g: string) => String(g).toLowerCase()))
+        : null;
+      const lines = Object.entries(config.modeOverrides)
+        .filter(([, ov]) => !wanted || wanted.has((ov.group || 'Unsorted').toLowerCase()))
+        .map(([name, ov]) => `${name} - ${ov.group || 'Unsorted'} - ${oneLine(ov.description)}`);
+      const groups = Array.isArray(payload.groups) ? payload.groups.map(String) : [];
+      spindle.sendToFrontend({ type: 'export_data', text: lines.join('\n'), count: lines.length, groups });
       break;
     }
 

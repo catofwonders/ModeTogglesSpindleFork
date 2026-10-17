@@ -28,6 +28,7 @@ interface ExportData {
   type: 'export_data';
   text: string;
   count: number;
+  groups?: string[];
 }
 
 const MICROCHIP_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" width="20" height="20"><path d="M5 3a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2H5zm2 2h6v6H7V5zm1 1v4h4V6H8zM2 7h1v2H2V7zm15 0h1v2h-1V7zM2 11h1v2H2v-2zm15 0h1v2h-1v-2zM7 0v2h2V0H7zm4 0v2h2V0h-2zM7 18v2h2v-2H7zm4 0v2h2v-2h-2z"/></svg>';
@@ -164,7 +165,11 @@ export function setup(ctx: SpindleFrontendContext) {
         showThemedAlert('You have no custom or edited modes to export yet.');
         return;
       }
-      downloadText(data.text, 'mode-toggles-export.txt', 'text/plain');
+      // Name the file after the group when exactly one was chosen.
+      const slug = data.groups && data.groups.length === 1
+        ? data.groups[0].toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+        : '';
+      downloadText(data.text, slug ? `mode-toggles-${slug}.txt` : 'mode-toggles-export.txt', 'text/plain');
     } else if (payload.type === 'export_config_data') {
       downloadText(payload.json, 'mode-toggles-config.json', 'application/json');
     } else if (payload.type === 'import_preview') {
@@ -509,8 +514,7 @@ export function setup(ctx: SpindleFrontendContext) {
     const row1 = mkEl('div');
     row1.style.cssText = 'display:flex;gap:3px;padding:2px 4px;';
     row1.appendChild(actionBtn('+ Add New', 'mt-action-add', showAddEditPrompt));
-    row1.appendChild(actionBtn('Export Modes', 'mt-action-export', () =>
-      send({ type: 'export_modes' })));
+    row1.appendChild(actionBtn('Export Modes', 'mt-action-export', showExportDialog));
     row1.appendChild(actionBtn('Import Modes', 'mt-action-import', doImport));
     container.appendChild(row1);
 
@@ -816,6 +820,75 @@ export function setup(ctx: SpindleFrontendContext) {
     } catch (e) {
       // User cancelled or error
     }
+  }
+
+  // Pick which groups of custom modes to export. All start ticked.
+  function showExportDialog() {
+    if (!state) return;
+    const counts = new Map<string, number>();
+    for (const m of state.modes) {
+      if (m.source === 'core') continue; // only custom and edited modes are exportable
+      const g = m.group || 'Unsorted';
+      counts.set(g, (counts.get(g) || 0) + 1);
+    }
+    if (counts.size === 0) {
+      showThemedAlert('You have no custom or edited modes to export yet.');
+      return;
+    }
+    const overlay = document.createElement('div');
+    overlay.className = 'mt-overlay';
+    const modal = document.createElement('div');
+    modal.className = 'mt-modal';
+    const title = document.createElement('h3');
+    title.style.cssText = 'margin:0 0 8px';
+    title.textContent = 'Export Modes';
+    modal.appendChild(title);
+    const help = document.createElement('small');
+    help.style.cssText = 'display:block;margin-bottom:10px;color:var(--lumiverse-text-muted,#999)';
+    help.textContent = 'Choose which groups of your custom modes to export.';
+    modal.appendChild(help);
+
+    const boxes: Array<{ group: string; cb: HTMLInputElement }> = [];
+    const list = document.createElement('div');
+    list.style.cssText = 'max-height:45vh;overflow-y:auto;margin-bottom:8px;';
+    for (const g of Array.from(counts.keys()).sort(naturalCompare)) {
+      const label = mkEl('label', 'mt-label');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = true;
+      label.append(cb, document.createTextNode(` ${g} (${counts.get(g)})`));
+      list.appendChild(label);
+      boxes.push({ group: g, cb });
+    }
+    modal.appendChild(list);
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:8px;flex-wrap:wrap;';
+    const mk = (label: string, onClick: () => void) => {
+      const b = document.createElement('button');
+      b.className = 'mt-btn';
+      b.textContent = label;
+      b.addEventListener('click', onClick);
+      btnRow.appendChild(b);
+      return b;
+    };
+    const toggleAll = mk('Select none', () => {
+      const anyOn = boxes.some((x) => x.cb.checked);
+      for (const x of boxes) x.cb.checked = !anyOn;
+      toggleAll.textContent = anyOn ? 'Select all' : 'Select none';
+    });
+    toggleAll.style.marginRight = 'auto';
+    mk('Cancel', () => overlay.remove());
+    mk('Export', () => {
+      const groups = boxes.filter((x) => x.cb.checked).map((x) => x.group);
+      if (groups.length === 0) return;
+      send({ type: 'export_modes', groups });
+      overlay.remove();
+    });
+    modal.appendChild(btnRow);
+    overlay.appendChild(modal);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
   }
 
   function showImportPreview(text: string, r: {
