@@ -346,7 +346,7 @@ function sendStateToFrontend(): void {
   });
 
   // Keep the {{modes}} macro value in sync with the current chat's ON modes.
-  void pushModesMacro();
+  pushModesMacro();
 }
 
 // ===== {{modes}} macro (push model) =====
@@ -365,42 +365,15 @@ function buildModesRawText(chatId: string): string {
   return onModes.map((m) => m.description).join('\n\n');
 }
 
-// Resolve {{user}}/{{char}} etc. in the raw text so the pushed value is
-// ready-to-use (we don't depend on the host re-resolving inside the tag).
-async function resolveModesText(
-  chatId: string,
-  userId: string | undefined,
-): Promise<string> {
-  let text = buildModesRawText(chatId);
-  if (!text) return '';
-  // {{user}} = active persona name; operator-scoped installs need the userId.
-  if (text.includes('{{user}}')) {
-    try {
-      const persona = await spindle.personas.getActive(userId);
-      if (persona?.name) text = text.replaceAll('{{user}}', persona.name);
-    } catch (e) {
-      spindle.log.warn(`[modes macro] persona lookup failed: ${e}`);
-    }
-  }
+// Push the raw descriptions, macros and all. Lumiverse expands any {{char}},
+// {{user}}, {{random}} etc. inside an extension macro's value during prompt
+// assembly, so they resolve fresh for every generation, against whichever
+// character is speaking (group chats included). Resolving them here instead
+// would freeze them at toggle time.
+// Fire-and-forget; synchronous, so pushes can never land out of order.
+function pushModesMacro(): void {
   try {
-    const resolved = await spindle.macros.resolve(text, { chatId, userId, commit: false });
-    if (resolved?.text) text = resolved.text;
-  } catch (e) {
-    spindle.log.warn(`[modes macro] resolve failed: ${e}`);
-  }
-  return text;
-}
-
-// Compute and push the current value for the active chat. Fire-and-forget.
-// Pushes are async (macro resolution awaits the host), so two quick toggles can
-// finish out of order. Only the newest request is allowed to push its value.
-let macroPushSeq = 0;
-async function pushModesMacro(): Promise<void> {
-  const seq = ++macroPushSeq;
-  try {
-    const text = await resolveModesText(currentChatId, currentUserId);
-    if (seq !== macroPushSeq) return; // a newer push superseded this one
-    spindle.updateMacroValue('modes', text);
+    spindle.updateMacroValue('modes', buildModesRawText(currentChatId));
   } catch (e) {
     spindle.log.warn(`[modes macro] push failed: ${e}`);
   }
