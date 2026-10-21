@@ -460,7 +460,8 @@ function sendStateToFrontend(): void {
 //  - a family's master and active levels form ONE paragraph, so the model reads
 //    "what this covers" and "what it is here" as a single rule;
 //  - modes without a family are one paragraph each;
-//  - groups (A-Z, like the menu) are separated by a "* * *" break line.
+//  - groups (A-Z, like the menu) are separated by a "~ ~ ~" break line (not "* * *",
+//    which markdown viewers turn into an invisible rule).
 function buildModesRawText(chatId: string): string {
   // Master switch: when Mode Toggles is disabled the macro emits nothing.
   if (!config.enabled) return '';
@@ -487,7 +488,7 @@ function buildModesRawText(chatId: string): string {
     }
     sections.push(paragraphs.join('\n\n'));
   }
-  return sections.join('\n\n* * *\n\n');
+  return sections.join('\n\n~ ~ ~\n\n');
 }
 
 // Output order: families stay together, in the order each family first
