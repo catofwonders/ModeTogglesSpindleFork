@@ -1,5 +1,7 @@
 declare const spindle: import('lumiverse-spindle-types').SpindleAPI;
 
+import { familyOf } from './search';
+
 // ===== Safe Toast Helper =====
 // Guard in case spindle.toast isn't ready during early init
 const toast = {
@@ -463,7 +465,33 @@ function buildModesRawText(chatId: string): string {
   if (!config.enabled) return '';
   const onModes = getModesView(chatId).filter((m) => m.status === 'ON');
   if (onModes.length === 0) return '';
-  return onModes.map((m) => m.description).join('\n\n');
+  return orderForOutput(onModes).map((m) => m.description).join('\n\n');
+}
+
+// Output order: families stay together, in the order each family first
+// appears in storage (which follows the imported file). Inside a family the
+// 0 (master) comes first, then the levels by number; modes sharing a number
+// keep their stored order. Modes without a family keep their own position.
+function orderForOutput<T extends { name: string; group: string }>(list: T[]): T[] {
+  const keyOf = (m: T): string => {
+    const f = familyOf(m.name);
+    return f ? `f:${(m.group || '').toLowerCase()}|${f.toLowerCase()}` : `n:${m.name}`;
+  };
+  const levelOf = (m: T): number => {
+    const match = m.name.match(/^.*?\S\s+(\d+)\s*:/);
+    return match ? Number(match[1]) : 0;
+  };
+  const firstIndex = new Map<string, number>();
+  const rows = list.map((m, i) => {
+    const key = keyOf(m);
+    if (!firstIndex.has(key)) firstIndex.set(key, i);
+    return { m, i, key, level: levelOf(m) };
+  });
+  rows.sort((a, b) =>
+    (firstIndex.get(a.key)! - firstIndex.get(b.key)!)
+    || (a.level - b.level)
+    || (a.i - b.i));
+  return rows.map((r) => r.m);
 }
 
 // Push the raw descriptions, macros and all. Lumiverse expands any {{char}},
@@ -592,6 +620,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
     case 'import_modes': {
       const plan = planImport(String(payload.text || ''));
       const replace = payload.mode === 'replace';
+      const keysBefore = Object.keys(config.modeOverrides);
       for (const e of plan.entries) {
         config.modeOverrides[e.name] = { description: e.description, group: normalizeGroup(e.group) };
       }
@@ -618,6 +647,29 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
           }
           removedCount++;
         }
+        // Store the file's modes in the file's order, placed where that set
+        // used to sit, so {{modes}} follows the file. Other groups and edited
+        // built-in modes keep their positions.
+        const fileNames = new Set(plan.entries.map((e) => e.name));
+        const replaced = new Set<string>([
+          ...plan.renames.map(([from]) => from),
+          ...plan.removed,
+        ]);
+        const rebuilt: Config['modeOverrides'] = {};
+        let placed = false;
+        const placeFile = () => {
+          for (const e of plan.entries) rebuilt[e.name] = config.modeOverrides[e.name];
+          placed = true;
+        };
+        for (const k of keysBefore) {
+          if (fileNames.has(k) || replaced.has(k)) {
+            if (!placed) placeFile();
+            continue;
+          }
+          if (config.modeOverrides[k]) rebuilt[k] = config.modeOverrides[k];
+        }
+        if (!placed) placeFile();
+        config.modeOverrides = rebuilt;
         lastUndo = null; // snapshot may reference names that no longer exist
       }
       await saveConfig();
