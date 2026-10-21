@@ -1,6 +1,6 @@
 declare const spindle: import('lumiverse-spindle-types').SpindleAPI;
 
-import { familyOf } from './search';
+import { familyOf, naturalCompare } from './search';
 
 // ===== Safe Toast Helper =====
 // Guard in case spindle.toast isn't ready during early init
@@ -452,17 +452,50 @@ function sendStateToFrontend(): void {
 // ===== {{modes}} macro (pull model) =====
 // Exposes the current chat's ON modes as a macro the user can place anywhere in
 // their Loom preset (e.g. inside a System block), instead of relying on fixed
-// injection. Outputs ONLY the mode descriptions, blank-line separated, with no
-// framing — the user writes any framing around the tag in their prompt.
+// injection. Outputs the active modes grouped by group and family (see
+// buildModesRawText); the user writes any framing around the tag in their prompt.
 
-// Raw text: all ON modes for the chat, blank line between each. No scheduling
-// (always all ON modes) and no framing.
+// Structured text: active modes grouped the way the menu groups them, so the
+// model sees which rules belong together. Every group is treated the same:
+//   ## Group            (one section per group, groups A-Z like the menu)
+//   ### Family          (numbered families: master first, then levels,
+//   master text           one line each, no blank line between them)
+//   level text
+//
+//   plain mode text     (modes without a number stand on their own)
+// Only group and family names are added; mode names are never sent.
 function buildModesRawText(chatId: string): string {
   // Master switch: when Mode Toggles is disabled the macro emits nothing.
   if (!config.enabled) return '';
   const onModes = getModesView(chatId).filter((m) => m.status === 'ON');
   if (onModes.length === 0) return '';
-  return orderForOutput(onModes).map((m) => m.description).join('\n\n');
+
+  const groups = new Map<string, ModeView[]>();
+  for (const m of orderForOutput(onModes)) {
+    const g = m.group || 'Unsorted';
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g)!.push(m);
+  }
+
+  const sections: string[] = [];
+  for (const g of Array.from(groups.keys()).sort(naturalCompare)) {
+    const blocks: string[] = [];
+    let currentFamily: string | null = null;
+    for (const m of groups.get(g)!) {
+      const fam = familyOf(m.name);
+      const text = m.description.trim();
+      if (fam && fam === currentFamily) {
+        blocks[blocks.length - 1] += '\n' + text;
+      } else if (fam) {
+        blocks.push(`### ${fam}\n${text}`);
+      } else {
+        blocks.push(text);
+      }
+      currentFamily = fam;
+    }
+    sections.push(`## ${g}\n\n${blocks.join('\n\n')}`);
+  }
+  return sections.join('\n\n');
 }
 
 // Output order: families stay together, in the order each family first
