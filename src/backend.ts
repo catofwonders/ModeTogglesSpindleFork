@@ -447,12 +447,9 @@ function sendStateToFrontend(): void {
       sortMode: config.sortMode,
     },
   });
-
-  // Keep the {{modes}} macro value in sync with the current chat's ON modes.
-  pushModesMacro();
 }
 
-// ===== {{modes}} macro (push model) =====
+// ===== {{modes}} macro (pull model) =====
 // Exposes the current chat's ON modes as a macro the user can place anywhere in
 // their Loom preset (e.g. inside a System block), instead of relying on fixed
 // injection. Outputs ONLY the mode descriptions, blank-line separated, with no
@@ -494,19 +491,16 @@ function orderForOutput<T extends { name: string; group: string }>(list: T[]): T
   return rows.map((r) => r.m);
 }
 
-// Push the raw descriptions, macros and all. Lumiverse expands any {{char}},
-// {{user}}, {{random}} etc. inside an extension macro's value during prompt
-// assembly, so they resolve fresh for every generation, against whichever
-// character is speaking (group chats included). Resolving them here instead
-// would freeze them at toggle time.
-// Fire-and-forget; synchronous, so pushes can never land out of order.
-function pushModesMacro(): void {
-  try {
-    spindle.updateMacroValue('modes', buildModesRawText(currentChatId));
-  } catch (e) {
-    spindle.log.warn(`[modes macro] push failed: ${e}`);
-  }
+// Lumiverse calls this every time it resolves {{modes}} and tells us which
+// chat the prompt is for, so each chat gets its own modes even when several
+// are open at once. Without a chat id (some previews) the chat open in the
+// menu is used. The raw descriptions are returned macros and all: Lumiverse
+// expands any {{user}}, {{random}} etc. in the result for every generation.
+function resolveModesMacro(ctx: { chatId?: unknown } | undefined): string {
+  const chatId = typeof ctx?.chatId === 'string' && ctx.chatId ? ctx.chatId : currentChatId;
+  return buildModesRawText(chatId);
 }
+
 spindle.onFrontendMessage(async (payload: any, userId?: string) => {
   // Capture userId for operator-scoped extensions
   if (userId && userId !== currentUserId) currentUserId = userId;
@@ -963,16 +957,18 @@ spindle.permissions.onDenied(({ permission, operation }) => {
   // Resolve the real active chatId immediately
   currentChatId = await resolveActiveChatId();
 
-  // Register the {{modes}} macro (push model — value supplied via
-  // updateMacroValue whenever modes/chat change, including from sendStateToFrontend).
+  // Register the {{modes}} macro (pull model — Lumiverse asks for the value
+  // per prompt, with the chat id, instead of reading one shared pushed value).
   spindle.registerMacro({
     name: 'modes',
     category: 'extension:mode_toggles',
     description:
       "Active Mode Toggles modes for the current chat, blank-line separated. Place {{modes}} anywhere in your preset.",
     returnType: 'string',
-    handler: '',
+    volatile: true,
+    // The runtime accepts a function handler; the published types still say string.
+    handler: resolveModesMacro as unknown as string,
   });
 
-  sendStateToFrontend(); // also performs the initial {{modes}} push
+  sendStateToFrontend();
 })();
