@@ -452,18 +452,15 @@ function sendStateToFrontend(): void {
 // ===== {{modes}} macro (pull model) =====
 // Exposes the current chat's ON modes as a macro the user can place anywhere in
 // their Loom preset (e.g. inside a System block), instead of relying on fixed
-// injection. Outputs the active modes grouped by group and family (see
-// buildModesRawText); the user writes any framing around the tag in their prompt.
+// injection. Outputs ONLY the mode descriptions, blank-line separated, with no
+// framing — the user writes any framing around the tag in their prompt.
 
-// Structured text: active modes grouped the way the menu groups them, so the
-// model sees which rules belong together. Every group is treated the same:
-//   ## Group            (one section per group, groups A-Z like the menu)
-//   ### Family          (numbered families: master first, then levels,
-//   master text           one line each, no blank line between them)
-//   level text
-//
-//   plain mode text     (modes without a number stand on their own)
-// Only group and family names are added; mode names are never sent.
+// Text sent to the model. No headings or names: only descriptions, so it reads
+// as plain rules continuing the user's framing. Structure is carried by layout:
+//  - a family's master and active levels form ONE paragraph, so the model reads
+//    "what this covers" and "what it is here" as a single rule;
+//  - modes without a family are one paragraph each;
+//  - groups (A-Z, like the menu) are separated by a "* * *" break line.
 function buildModesRawText(chatId: string): string {
   // Master switch: when Mode Toggles is disabled the macro emits nothing.
   if (!config.enabled) return '';
@@ -479,23 +476,18 @@ function buildModesRawText(chatId: string): string {
 
   const sections: string[] = [];
   for (const g of Array.from(groups.keys()).sort(naturalCompare)) {
-    const blocks: string[] = [];
+    const paragraphs: string[] = [];
     let currentFamily: string | null = null;
     for (const m of groups.get(g)!) {
       const fam = familyOf(m.name);
-      const text = m.description.trim();
-      if (fam && fam === currentFamily) {
-        blocks[blocks.length - 1] += '\n' + text;
-      } else if (fam) {
-        blocks.push(`### ${fam}\n${text}`);
-      } else {
-        blocks.push(text);
-      }
+      const text = m.description.replace(/\s+/g, ' ').trim();
+      if (fam && fam === currentFamily) paragraphs[paragraphs.length - 1] += ' ' + text;
+      else paragraphs.push(text);
       currentFamily = fam;
     }
-    sections.push(`## ${g}\n\n${blocks.join('\n\n')}`);
+    sections.push(paragraphs.join('\n\n'));
   }
-  return sections.join('\n\n');
+  return sections.join('\n\n* * *\n\n');
 }
 
 // Output order: families stay together, in the order each family first
