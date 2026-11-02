@@ -3,8 +3,8 @@ declare const spindle: import('lumiverse-spindle-types').SpindleAPI;
 import { familyOf, naturalCompare } from './search';
 import { ChatModeStore, createWriteQueue, type ChatModes } from './chat-store';
 import {
-  applyFraming, findAssignedBlock, pickableBlocks, withModesTag, withoutAddedModesTag, hasModesTag,
-  type BlockAssignment,
+  applyFraming, blockNotes, editBlockContent, findAssignedBlock, pickableBlocks, withModesTag, withoutAddedModesTag,
+  hasModesTag, type BlockAssignment, type BlockLike, type PresetIO,
 } from './preset-blocks';
 
 // ===== Safe Toast Helper =====
@@ -653,37 +653,80 @@ async function resolveModesMacro(ctx: { chatId?: unknown } | undefined): Promise
 // the same host feature LumiScript's api.presets wraps. For each preset the
 // user picked a block in, {{modes}} is kept at the end of that block, and put
 // back whenever the preset is saved or updated (PRESET_CHANGED).
-const presetWrites = new Map<string, Promise<void>>();
+const presetWrites = new Map<string, Promise<boolean>>();
 
-function ensureModesInPreset(presetId: string): Promise<void> {
-  // One check per preset at a time; our own update fires PRESET_CHANGED again,
+// Lossless preset access: read the preset as stored, save the whole block list
+// back with only one block's content changed, guarded by cache_revision.
+const presetIO: PresetIO = {
+  async get(presetId) {
+    const preset = await spindle.presets.get(presetId, currentUserId);
+    if (!preset) return null;
+    return {
+      prompt_order: (preset.prompt_order || []) as unknown as Array<Record<string, unknown>>,
+      cache_revision: preset.cache_revision ?? 0,
+    };
+  },
+  async save(presetId, promptOrder, expectedRevision) {
+    try {
+      const saved = await spindle.presets.update(
+        presetId,
+        { prompt_order: promptOrder as any, expected_cache_revision: expectedRevision } as any,
+        currentUserId,
+      );
+      return saved ? 'ok' : 'gone';
+    } catch (e: any) {
+      if (e?.code === 'PRESET_REVISION_CONFLICT' || /changed since revision/i.test(String(e?.message ?? e))) {
+        return 'conflict';
+      }
+      if (/Preset not found/i.test(String(e?.message ?? e))) return 'gone';
+      throw e;
+    }
+  },
+};
+
+async function readPresetBlocks(presetId: string): Promise<BlockLike[] | null> {
+  const preset = await presetIO.get(presetId);
+  return preset ? (preset.prompt_order as unknown as BlockLike[]) : null;
+}
+
+/**
+ * Make sure the picked block of this preset holds {{modes}}. Resolves true
+ * when it does afterwards. Failures are shown to the user, never silent.
+ */
+function ensureModesInPreset(presetId: string): Promise<boolean> {
+  // One check per preset at a time; our own save fires PRESET_CHANGED again,
   // and that second check finds {{modes}} already there.
-  const prev = presetWrites.get(presetId) ?? Promise.resolve();
-  const next = prev.catch(() => {}).then(async () => {
+  const prev = presetWrites.get(presetId) ?? Promise.resolve(true);
+  const next = prev.catch(() => false).then(async () => {
     const assignment = config.presetBlocks[presetId];
-    if (!assignment) return;
-    let blocks: any[];
+    if (!assignment) return false;
+    const where = `"${assignment.blockName}" in preset "${assignment.presetName}"`;
     try {
-      blocks = await spindle.presets.blocks.list(presetId, currentUserId);
+      const blocks = await readPresetBlocks(presetId);
+      if (!blocks) {
+        toast.warning(`Mode Toggles: preset "${assignment.presetName}" no longer exists.`);
+        return false;
+      }
+      const block = findAssignedBlock(blocks, assignment);
+      if (!block) {
+        toast.warning(`Mode Toggles: couldn't find ${where} any more. Pick the block again in the Mode Toggles tab.`);
+        return false;
+      }
+      if (block.id !== assignment.blockId) {
+        assignment.blockId = block.id;
+        await saveConfig();
+      }
+      if (hasModesTag(block.content)) return true;
+      const result = await editBlockContent(presetIO, presetId, block.id, withModesTag);
+      if (result === 'ok' || result === 'unchanged') {
+        spindle.log.info(`Mode Toggles: {{modes}} is in ${where}`);
+        return true;
+      }
+      toast.warning(`Mode Toggles: couldn't add {{modes}} to ${where} (${result === 'gone' ? 'preset deleted' : 'block removed'}).`);
+      return false;
     } catch (e) {
-      spindle.log.warn(`Mode Toggles: could not read preset "${assignment.presetName}": ${e}`);
-      return;
-    }
-    const block = findAssignedBlock(blocks, assignment);
-    if (!block) {
-      toast.warning(`Mode Toggles: the block "${assignment.blockName}" is no longer in preset "${assignment.presetName}". Pick it again in the Mode Toggles tab.`);
-      return;
-    }
-    if (block.id !== assignment.blockId) {
-      assignment.blockId = block.id;
-      await saveConfig();
-    }
-    if (hasModesTag(block.content)) return;
-    try {
-      await spindle.presets.blocks.update(presetId, block.id, { content: withModesTag(block.content) }, currentUserId);
-      spindle.log.info(`Mode Toggles: added {{modes}} to "${block.name}" in preset "${assignment.presetName}"`);
-    } catch (e) {
-      spindle.log.warn(`Mode Toggles: could not update preset "${assignment.presetName}": ${e}`);
+      toast.error(`Mode Toggles: couldn't add {{modes}} to ${where}: ${e}`);
+      return false;
     }
   }).finally(() => {
     if (presetWrites.get(presetId) === next) presetWrites.delete(presetId);
@@ -694,15 +737,13 @@ function ensureModesInPreset(presetId: string): Promise<void> {
 
 async function removeModesFromPreset(presetId: string, assignment: BlockAssignment): Promise<void> {
   try {
-    const blocks = await spindle.presets.blocks.list(presetId, currentUserId);
+    const blocks = await readPresetBlocks(presetId);
+    if (!blocks) return;
     const block = findAssignedBlock(blocks, assignment);
     if (!block) return;
-    const content = withoutAddedModesTag(block.content);
-    if (content !== block.content) {
-      await spindle.presets.blocks.update(presetId, block.id, { content }, currentUserId);
-    }
+    await editBlockContent(presetIO, presetId, block.id, withoutAddedModesTag);
   } catch (e) {
-    spindle.log.warn(`Mode Toggles: could not update preset "${assignment.presetName}": ${e}`);
+    toast.error(`Mode Toggles: couldn't remove {{modes}} from "${assignment.blockName}": ${e}`);
   }
 }
 
@@ -1175,17 +1216,23 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       const presetId = String(payload.presetId || '');
       if (!presetId) return;
       try {
-        const blocks = pickableBlocks(await spindle.presets.blocks.list(presetId, currentUserId));
+        const all = await readPresetBlocks(presetId);
+        if (!all) throw new Error('Preset not found');
+        const blocks = pickableBlocks(all);
         spindle.sendToFrontend({
           type: 'blocks_list',
           presetId,
           blocks: blocks.map((b) => ({
             id: b.id, name: b.name, enabled: b.enabled !== false, isCategory: b.marker === 'category',
+            notes: blockNotes(b), hasModes: hasModesTag(b.content),
           })),
           selectedId: config.presetBlocks[presetId]?.blockId ?? null,
         });
       } catch (e) {
-        spindle.sendToFrontend({ type: 'blocks_list', presetId, blocks: [], selectedId: null, error: String(e) });
+        spindle.sendToFrontend({
+          type: 'blocks_list', presetId, blocks: [], selectedId: null,
+          error: `Couldn't read this preset's blocks: ${e}`,
+        });
       }
       break;
     }
@@ -1195,8 +1242,9 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       const blockId = String(payload.blockId || '');
       if (!presetId || !blockId) return;
       try {
-        const blocks = pickableBlocks(await spindle.presets.blocks.list(presetId, currentUserId));
-        const block = blocks.find((b) => b.id === blockId);
+        const all = await readPresetBlocks(presetId);
+        if (!all) { toast.error('That preset no longer exists'); return; }
+        const block = pickableBlocks(all).find((b) => b.id === blockId);
         if (!block) { toast.error('That block can no longer be found in the preset'); return; }
         const previous = config.presetBlocks[presetId];
         // Record the new choice first, so the "preset changed" signal from the
@@ -1206,9 +1254,9 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         };
         await saveConfig();
         if (previous && previous.blockId !== blockId) await removeModesFromPreset(presetId, previous);
-        await ensureModesInPreset(presetId);
+        const ok = await ensureModesInPreset(presetId);
         sendStateToFrontend();
-        toast.success(`{{modes}} is now kept at the end of "${block.name}"`);
+        if (ok) toast.success(`{{modes}} is now kept in "${block.name}"`);
       } catch (e) {
         toast.error(`Could not read that preset: ${e}`);
       }

@@ -26,7 +26,7 @@ interface StateUpdate {
   presetBlocks: Array<{ presetId: string; presetName: string; blockName: string }>;
 }
 
-interface BlockOption { id: string; name: string; enabled: boolean; isCategory: boolean }
+interface BlockOption { id: string; name: string; enabled: boolean; isCategory: boolean; notes?: string[]; hasModes?: boolean }
 
 interface ExportData {
   type: 'export_data';
@@ -449,7 +449,8 @@ export function setup(ctx: SpindleFrontendContext) {
         for (const b of pickerBlocks) {
           const opt = document.createElement('option');
           opt.value = b.id;
-          opt.textContent = `${b.isCategory ? '▸ ' : ''}${b.name || '(unnamed)'}${b.enabled ? '' : ' (off)'}`;
+          const notes = [...(b.notes ?? (b.enabled ? [] : ['off'])), ...(b.hasModes ? ['already has {{modes}}'] : [])];
+          opt.textContent = `${b.isCategory ? '▸ ' : ''}${b.name || '(unnamed)'}${notes.length ? ` (${notes.join(', ')})` : ''}`;
           if (b.id === pickerBlockId) opt.selected = true;
           blockSelect.appendChild(opt);
         }
@@ -467,7 +468,7 @@ export function setup(ctx: SpindleFrontendContext) {
         if (pickerError) {
           const err = document.createElement('small');
           err.className = 'mt-small-label';
-          err.textContent = `Couldn't read this preset's blocks: ${pickerError}`;
+          err.textContent = pickerError;
           blockSection.appendChild(err);
         }
       }

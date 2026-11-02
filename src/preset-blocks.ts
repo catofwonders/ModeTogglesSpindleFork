@@ -17,6 +17,11 @@ export interface BlockLike {
   enabled?: boolean;
   marker?: string | null;
   sealed?: boolean;
+  stashId?: string;
+  role?: string;
+  position?: string;
+  injectionTrigger?: string[];
+  characterTagTrigger?: string[];
 }
 
 /** What the user picked for one preset. The name is kept so the block can be
@@ -52,15 +57,82 @@ export function withoutAddedModesTag(content: string): string {
 const TEXT_MARKERS = new Set(['category', 'main_prompt', 'enhance_definitions', 'jailbreak', 'nsfw_prompt']);
 
 /**
- * Blocks whose own text is sent to the model: regular blocks, the
- * text-bearing markers above, and category headers. Structural markers such
- * as Chat History or World Info are placeholders Lumiverse fills itself, and
- * sealed LumiHub blocks have their text supplied by LumiHub, so neither can
- * hold {{modes}}.
+ * Blocks whose own text is sent to the model and can safely hold {{modes}}:
+ * regular blocks, the text-bearing markers above, and category headers. Not:
+ *  - structural markers (Chat History, World Info, …): placeholders Lumiverse
+ *    fills itself;
+ *  - sealed LumiHub blocks: their text is supplied by LumiHub;
+ *  - stashed blocks (stashId): shared across presets, so Lumiverse copies any
+ *    edit into every preset that uses them (syncStashedBlocksAcrossPresets).
  */
 export function pickableBlocks<T extends BlockLike>(blocks: ReadonlyArray<T>): T[] {
   return blocks.filter((b) =>
-    (b.marker === null || b.marker === undefined || TEXT_MARKERS.has(b.marker)) && b.sealed !== true);
+    !!b && typeof b.id === 'string'
+    && (b.marker === null || b.marker === undefined || TEXT_MARKERS.has(b.marker))
+    && b.sealed !== true
+    && !(typeof b.stashId === 'string' && b.stashId.trim()));
+}
+
+/** Plain-words notes on when a block's text actually reaches the model. */
+export function blockNotes(b: BlockLike): string[] {
+  const notes: string[] = [];
+  if (b.enabled === false) notes.push('off');
+  if (b.position === 'in_history') notes.push('inside the chat history');
+  if (b.position === 'post_history') notes.push('after the chat history');
+  if (b.role === 'user_append' || b.role === 'assistant_append') notes.push('added onto a chat message');
+  else if (b.role === 'user') notes.push('sent as a user message');
+  else if (b.role === 'assistant') notes.push('sent as an assistant message');
+  if (Array.isArray(b.injectionTrigger) && b.injectionTrigger.length > 0) notes.push('only for some kinds of generation');
+  if (Array.isArray(b.characterTagTrigger) && b.characterTagTrigger.length > 0) notes.push('only for some characters');
+  return notes;
+}
+
+// ===== Editing one block's text without touching anything else =====
+// Lumiverse has two ways to save a block. spindle.presets.blocks.update
+// re-saves EVERY block of the preset through normalizePromptBlock, which keeps
+// only a fixed list of fields (it drops LumiHub's sealed fields, for one).
+// spindle.presets.update stores prompt_order exactly as given, and only if the
+// preset's cache_revision still matches (else it throws a revision conflict).
+// So Mode Toggles reads the preset as stored, changes one block's content,
+// and saves the whole list back as it was, retrying on a conflict.
+
+export interface StoredPreset {
+  prompt_order: Array<Record<string, unknown>>;
+  cache_revision: number;
+}
+
+export interface PresetIO {
+  get(presetId: string): Promise<StoredPreset | null>;
+  /** Save prompt_order if the preset is still at `expectedRevision`; 'conflict' if it changed. */
+  save(presetId: string, promptOrder: Array<Record<string, unknown>>, expectedRevision: number): Promise<'ok' | 'conflict' | 'gone'>;
+}
+
+export const MAX_PRESET_ATTEMPTS = 5;
+
+export type EditResult = 'ok' | 'unchanged' | 'missing' | 'gone';
+
+export async function editBlockContent(
+  io: PresetIO,
+  presetId: string,
+  blockId: string,
+  transform: (content: string) => string,
+): Promise<EditResult> {
+  for (let attempt = 1; attempt <= MAX_PRESET_ATTEMPTS; attempt++) {
+    const preset = await io.get(presetId);
+    if (!preset) return 'gone';
+    const order = Array.isArray(preset.prompt_order) ? preset.prompt_order : [];
+    const index = order.findIndex((b) => b && b.id === blockId);
+    if (index === -1) return 'missing';
+    const before = typeof order[index].content === 'string' ? (order[index].content as string) : '';
+    const after = transform(before);
+    if (after === before) return 'unchanged';
+    // Every block, and every field of the edited block, stays exactly as stored.
+    const next = order.map((b, i) => (i === index ? { ...b, content: after } : b));
+    const result = await io.save(presetId, next, preset.cache_revision);
+    if (result === 'ok') return 'ok';
+    if (result === 'gone') return 'gone';
+  }
+  throw new Error(`the preset kept changing; not saved after ${MAX_PRESET_ATTEMPTS} attempts`);
 }
 
 /**
