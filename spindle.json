@@ -1,14 +1,15 @@
 {
-  "version": "1.1.0",
+  "version": "1.2.0",
   "name": "Mode Toggles",
   "identifier": "mode_toggles",
   "author": "catofwonders",
   "github": "https://github.com/catofwonders/ModeTogglesSpindleFork",
   "homepage": "https://github.com/catofwonders/ModeTogglesSpindleFork",
-  "description": "Toggle non-diegetic modifier modes and send them to your prompts, either through the {{modes}} macro or placed directly in the final prompt. Modes can be grouped, imported/exported, saved as presets, and configured per-chat.",
+  "description": "Toggle non-diegetic modifier modes and send them to your prompts through the {{modes}} macro, which Mode Toggles can keep inside a block you pick in each preset. Modes can be grouped, imported/exported, saved as presets, and are stored in each chat.",
   "permissions": [
     "chats",
-    "interceptor"
+    "chat_mutation",
+    "presets"
   ],
   "entry_backend": "dist/backend.js",
   "entry_frontend": "dist/frontend.js",

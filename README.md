@@ -8,9 +8,10 @@ Toggle non-diegetic "modifier" modes on and off per chat, then drop them anywher
 
 - **340+ built-in modes** in groups such as Visual & Aesthetic, Genre & Cinematic, Social & Power, Abstract & Metaphysical, Narrative & Story, Temporal & Physics and more
 - **`{{modes}}` macro**: place your active modes anywhere in your Loom preset instead of a fixed injection point
-- **Direct placement**: or let the extension place your framing and active modes in the final prompt itself (top of the prompt, just before chat history, or at a depth from the end), the same in every preset, shown in the Prompt Breakdown
+- **`{{modes}}` kept inside a block you pick**: per preset, choose the block your rules belong in; Mode Toggles adds `{{modes}}` to the end of it and puts it back after preset updates, so the modes are sent as part of that block's own text
+- **Framing**: optional text sent with your modes wherever `{{modes}}` is
 - **Macros inside modes**: `{{user}}`, `{{char}}` and other Lumiverse macros in a mode's description are resolved fresh at every generation, so `{{char}}` follows whoever is speaking in group chats
-- **Per-chat state**: each chat remembers which modes are ON
+- **Per-chat state, stored in each chat**: each chat remembers which modes are ON; deleting a chat deletes its modes, and a branched chat keeps them
 - **Presets**: save the current chat's active modes, then load (replace) or merge them into any chat
 - **Undo**: reverse the last *Disable All* or preset load
 - **Custom modes**: add, edit and override modes, then import/export them as plain text
@@ -55,22 +56,25 @@ How the macro behaves:
 - It outputs **nothing** when no modes are ON, so any framing you write around it will still appear. Keep the framing short or neutral.
 - It updates automatically when you toggle modes or switch chats.
 
-## Direct placement (optional)
+## Framing (optional)
 
-By default the modes go wherever your preset has `{{modes}}`. In the **Mode Toggles** drawer tab, **Where modes are sent** can instead place them directly in the prompt, after the preset has been assembled:
+The **Framing** box in the drawer tab holds text that is sent together with your modes, wherever `{{modes}}` is. Put `{{modes}}` in it where the modes go, or leave it out to add the modes after the framing. Macros such as `{{user}}` are resolved as usual. Nothing is sent, framing included, when no modes are ON.
 
-- **Top of the prompt**: the very first message, before everything else
-- **Just before chat history**: after the preset's opening blocks, right before the conversation
-- **At a depth from the end**: counted in messages from the end of the final prompt; `0` is after the last message, and a depth larger than the prompt puts it at the top
+Leave it empty if your preset already has framing written around `{{modes}}`, or the framing is sent twice.
 
-With a direct placement:
+## Keeping `{{modes}}` inside a preset block (optional)
 
-- A **Framing** box appears. Its text is sent together with the modes; put `{{modes}}` where the modes go, or leave it out to add them after the framing. Macros such as `{{user}}` are resolved as usual.
-- `{{modes}}` in a preset outputs nothing, so the modes are never sent twice. Turn off any preset block that only held `{{modes}}` and its framing.
-- Nothing is sent when no modes are ON.
-- The Prompt Breakdown lists the placed text as **Mode Toggles**, so you can check where it landed.
+Instead of a separate block that only holds `{{modes}}`, you can have the modes sent as part of one of the preset's own blocks, for example the block with its main instructions. In the drawer tab, under **Keep {{modes}} inside a preset block**:
 
-This needs the `interceptor` permission.
+1. Click **Choose a preset block…**, pick a preset, then pick a block.
+2. Click **Keep {{modes}} in this block**. Mode Toggles adds `{{modes}}` to the end of that block.
+3. Turn off any other block in that preset that also has `{{modes}}`, so the modes aren't sent twice.
+
+Each preset has its own choice, so this works with any preset whatever its blocks are called. Only blocks whose text is sent can be picked: structural markers such as Chat History, and sealed LumiHub blocks, are not offered.
+
+When the preset is saved or updated (including updates installed from LumiHub) and `{{modes}}` is no longer in the block, Mode Toggles puts it back. If the update gives the block a new id, it is found again by its name. **Remove** stops this and takes out the `{{modes}}` Mode Toggles added.
+
+This edits the preset itself, through Lumiverse's preset API, and needs the `presets` permission.
 
 ## Using the quick toggle menu
 
@@ -96,8 +100,10 @@ The **Mode Toggles** tab in the drawer contains:
 - **Enable Mode Toggles**: master switch. When off, `{{modes}}` outputs nothing and toggling is paused; your per-chat toggles are kept for when you turn it back on
 - **Load Core (Default) Modes**: show or hide the built-in modes (your custom modes stay)
 - **Mode list order**: by group or one flat A→Z list
+- **Framing** (see above)
+- **Keep {{modes}} inside a preset block** (see above)
 - **Remove All Custom Modes**
-- **Reset to Defaults**: clears custom modes and per-chat toggles; presets are kept
+- **Reset to Defaults**: clears custom modes, the framing and every chat's toggles; presets and preset-block choices are kept
 
 ## Writing your own modes
 
@@ -125,8 +131,9 @@ Tips:
 
 | Permission | Why |
 |---|---|
-| `chats` | Detects the active chat so toggles are stored per chat |
-| `interceptor` | Places the modes directly in the final prompt (only with a direct placement) |
+| `chats` | Detects the active chat, and stores each chat's toggles in that chat |
+| `chat_mutation` | Lets Lumiverse save a chat's toggles only if nothing else changed the chat at the same moment, so a save can never overwrite other chat data. Lumiverse puts this check behind the same permission as reading messages; Mode Toggles does not read or edit messages |
+| `presets` | Keeps `{{modes}}` in the block you picked (only if you pick one) |
 
 ## Extension structure
 
@@ -134,11 +141,12 @@ Tips:
 ModeTogglesSpindleFork/
 ├── spindle.json          # Extension manifest
 ├── src/
-│   ├── backend.ts        # Storage, per-chat state, presets, {{modes}} macro, direct placement
+│   ├── backend.ts        # Settings, presets, {{modes}} macro, preset blocks, actions
+│   ├── chat-store.ts     # Per-chat toggles stored in each chat (adapted from LumiScript)
+│   ├── preset-blocks.ts  # Adding/finding {{modes}} in a preset block, framing
 │   ├── frontend.ts       # Drawer settings tab + input bar toggle menu
-│   ├── placement.ts      # Where direct placement puts the modes
-│   └── vendor/lumiscript # LumiScript's prompt-injection pipeline (MIT, unchanged)
-├── tests/                # bun test: placement + LumiScript's own tests
+│   └── vendor/lumiscript # LumiScript's license and what was adapted from it
+├── tests/                # bun test
 ├── defaults/
 │   ├── config.json       # Default settings (seeded to storage on install)
 │   └── modes/            # Built-in mode files (seeded to storage)
@@ -153,9 +161,10 @@ ModeTogglesSpindleFork/
 ### How it works
 
 **Backend (`src/backend.ts`)**
-- Loads built-in modes from `modes/modes_N.txt` in extension storage, and custom modes and overrides from `config.json`.
-- Stores only the modes that are ON for each chat; OFF is simply absent.
-- Registers the `{{modes}}` macro and pushes a new value with `updateMacroValue` whenever modes or the active chat change. It pushes the descriptions as written; Lumiverse resolves any macros inside them (`{{user}}`, `{{char}}`, `{{random}}`…) during prompt assembly.
+- Loads built-in modes from `modes/modes_N.txt` in extension storage, and custom modes, overrides and settings from `config.json`.
+- Stores the names of the modes that are ON in each chat's own metadata (`mode_toggles`); OFF is simply absent. Each save re-reads the chat and changes only that key, one save at a time per chat, and the write only lands if the chat is unchanged since it was read (otherwise it re-reads and tries again). Older versions kept every chat's toggles in `config.json`; those are moved into their chats automatically, and entries for deleted chats are dropped.
+- Registers the `{{modes}}` macro. Lumiverse asks it for a value each time it builds a prompt, with the chat id, so each chat gets its own modes. It returns the descriptions as written, inside the Framing if set; Lumiverse resolves any macros inside them (`{{user}}`, `{{char}}`, `{{random}}`…).
+- Keeps `{{modes}}` in the picked block of each preset, and listens for `PRESET_CHANGED` to put it back after updates.
 - Handles presets, undo, import/export and tidy actions from the frontend.
 
 **Frontend (`src/frontend.ts`)**
@@ -167,7 +176,7 @@ ModeTogglesSpindleFork/
 
 Based on [st-mode-toggles](https://github.com/dfaker/st-mode-toggles) by dfaker. Spindle port by catofwonders.
 
-Direct placement uses the interceptor pipeline from [LumiScript](https://github.com/mindbound/lumiscript) by mindbound (MIT), vendored unchanged in `src/vendor/lumiscript` with its license and tests.
+Per-chat storage and the save queue are adapted from [LumiScript](https://github.com/mindbound/lumiscript) by mindbound (MIT). See `src/vendor/lumiscript` for its license and exactly what was taken.
 
 ## License
 
