@@ -642,7 +642,42 @@ function orderForOutput<T extends { name: string; group: string }>(list: T[]): T
 // are open at once. Without a chat id (some previews) the chat open in the
 // menu is used. The text is returned macros and all: Lumiverse expands any
 // {{user}}, {{random}} etc. in the result for every generation.
-async function resolveModesMacro(ctx: { chatId?: unknown } | undefined): Promise<string> {
+// ===== Which user =====
+// Operator-scoped installs must name the user on every call ("userId is
+// required for operator-scoped extensions"). Lumiverse tells us the user with
+// frontend messages, events and macro requests, but not at startup, so the
+// startup work (preset checks, moving old data) runs again once it's known.
+let startupWorkRunning: Promise<void> | null = null;
+
+function noteUser(userId: unknown): void {
+  if (typeof userId !== 'string' || !userId || userId === currentUserId) return;
+  const first = !currentUserId;
+  currentUserId = userId;
+  if (first) void runStartupWork();
+}
+
+function isMissingUserError(e: unknown): boolean {
+  return /userId is required/i.test(String((e as any)?.message ?? e));
+}
+
+function runStartupWork(): Promise<void> {
+  if (startupWorkRunning) return startupWorkRunning;
+  startupWorkRunning = (async () => {
+    await loadChat(currentChatId);
+    // Presets updated while Mode Toggles wasn't running: put {{modes}} back.
+    for (const presetId of Object.keys(config.presetBlocks)) await ensureModesInPreset(presetId);
+    // Move old per-chat entries from config.json into their chats (and drop
+    // the ones whose chat was deleted). Entries that can't be reached now are
+    // moved the next time their chat is opened.
+    for (const chatId of Object.keys(config.chatStates)) await loadChat(chatId);
+  })().finally(() => { startupWorkRunning = null; });
+  return startupWorkRunning;
+}
+
+async function resolveModesMacro(
+  ctx: { chatId?: unknown; env?: { extra?: { userId?: unknown } } } | undefined,
+): Promise<string> {
+  noteUser(ctx?.env?.extra?.userId);
   const chatId = typeof ctx?.chatId === 'string' && ctx.chatId ? ctx.chatId : currentChatId;
   await loadChat(chatId);
   return applyFraming(buildModesRawText(chatId), config.framing);
@@ -725,6 +760,11 @@ function ensureModesInPreset(presetId: string): Promise<boolean> {
       toast.warning(`Mode Toggles: couldn't add {{modes}} to ${where} (${result === 'gone' ? 'preset deleted' : 'block removed'}).`);
       return false;
     } catch (e) {
+      if (isMissingUserError(e)) {
+        // Startup on an operator-scoped install: retried once the user is known.
+        spindle.log.info(`Mode Toggles: checking ${where} once the user is known`);
+        return false;
+      }
       toast.error(`Mode Toggles: couldn't add {{modes}} to ${where}: ${e}`);
       return false;
     }
@@ -760,7 +800,7 @@ async function listAllPresets(): Promise<Array<{ id: string; name: string }>> {
 
 spindle.onFrontendMessage(async (payload: any, userId?: string) => {
   // Capture userId for operator-scoped extensions
-  if (userId && userId !== currentUserId) currentUserId = userId;
+  noteUser(userId);
 
   // Authoritative chatId: getActive() > payload.chatId > cached currentChatId.
   // This protects against stale frontend chatIds after rapid chat switches.
@@ -1278,7 +1318,8 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
 });
 
 // ===== Events =====
-spindle.on('CHAT_CHANGED', async (data) => {
+spindle.on('CHAT_CHANGED', async (data, userId) => {
+  noteUser(userId);
   // Lumiverse 1.0 payload shape is { chat: { id }, changedFields? }.
   // Keep a defensive fallback to the older flat { chatId } for pre-1.0 hosts.
   const hint = data?.chat?.id ?? (data as any)?.chatId;
@@ -1291,7 +1332,8 @@ spindle.on('CHAT_CHANGED', async (data) => {
 
 // A deleted chat takes its modes with it (they live in the chat); just drop
 // the cached copy.
-spindle.on('CHAT_DELETED', (data: any) => {
+spindle.on('CHAT_DELETED', (data: any, userId?: string) => {
+  noteUser(userId);
   const id = data?.chatId ?? data?.id ?? data?.chat?.id;
   if (typeof id === 'string') chatStore.forget(id);
 });
@@ -1299,7 +1341,7 @@ spindle.on('CHAT_DELETED', (data: any) => {
 // A preset was saved or updated (including updates installed from LumiHub):
 // put {{modes}} back into its chosen block if the update removed it.
 spindle.on('PRESET_CHANGED', (data: any, userId?: string) => {
-  if (userId && !currentUserId) currentUserId = userId;
+  noteUser(userId);
   const id = data?.id ?? data?.preset?.id;
   if (typeof id === 'string' && config.presetBlocks[id]) void ensureModesInPreset(id);
 });
@@ -1337,14 +1379,6 @@ spindle.permissions.onDenied(({ permission, operation }) => {
     handler: resolveModesMacro as unknown as string,
   });
 
-  await loadChat(currentChatId);
+  await runStartupWork();
   sendStateToFrontend();
-
-  // Presets updated while Mode Toggles wasn't running: put {{modes}} back.
-  for (const presetId of Object.keys(config.presetBlocks)) await ensureModesInPreset(presetId);
-
-  // Move old per-chat entries from config.json into their chats (and drop the
-  // ones whose chat was deleted). Entries that can't be reached now are moved
-  // the next time their chat is opened.
-  for (const chatId of Object.keys(config.chatStates)) await loadChat(chatId);
 })();
