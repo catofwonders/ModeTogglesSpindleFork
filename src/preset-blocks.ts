@@ -45,14 +45,22 @@ export function withoutAddedModesTag(content: string): string {
 }
 
 /**
- * Blocks whose own text is sent to the model: regular blocks, and category
- * headers (which can hold text). Structural markers such as chat history are
- * placeholders Lumiverse fills itself, and sealed LumiHub blocks have their
- * text supplied by LumiHub, so neither can hold {{modes}}.
+ * Markers whose block text Lumiverse sends as written (its
+ * CONTENT_BEARING_MARKERS in prompt-assembly.service.ts), e.g. a preset's
+ * Main Prompt. Category headers are sent too when they hold text.
+ */
+const TEXT_MARKERS = new Set(['category', 'main_prompt', 'enhance_definitions', 'jailbreak', 'nsfw_prompt']);
+
+/**
+ * Blocks whose own text is sent to the model: regular blocks, the
+ * text-bearing markers above, and category headers. Structural markers such
+ * as Chat History or World Info are placeholders Lumiverse fills itself, and
+ * sealed LumiHub blocks have their text supplied by LumiHub, so neither can
+ * hold {{modes}}.
  */
 export function pickableBlocks<T extends BlockLike>(blocks: ReadonlyArray<T>): T[] {
   return blocks.filter((b) =>
-    (b.marker === null || b.marker === undefined || b.marker === 'category') && b.sealed !== true);
+    (b.marker === null || b.marker === undefined || TEXT_MARKERS.has(b.marker)) && b.sealed !== true);
 }
 
 /**
