@@ -6,11 +6,11 @@ import { beforeAll, describe, expect, test } from 'bun:test';
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const settle = () => sleep(20);
 
-type Block = { id: string; name: string; content: string; enabled: boolean; marker: string | null; sealed?: boolean };
+type Block = { id: string; name: string; content: string; enabled: boolean; marker: string | null; sealed?: boolean; sealedKey?: string; stashId?: string };
 
 const files = new Map<string, string>();
 const chats = new Map<string, Record<string, unknown>>();
-const presets = new Map<string, { id: string; name: string; blocks: Block[] }>();
+const presets = new Map<string, { id: string; name: string; blocks: Block[]; revision: number }>();
 const listeners = new Map<string, (payload: any, userId?: string) => void>();
 const sent: any[] = [];
 const toasts: string[] = [];
@@ -58,25 +58,27 @@ const spindle = {
     },
   },
   presets: {
+    // Like Lumiverse: the preset as stored (every field kept), saved only at
+    // the expected cache_revision, PRESET_CHANGED after every save.
+    async get(presetId: string) {
+      const p = presets.get(presetId);
+      return p ? { id: p.id, name: p.name, prompt_order: JSON.parse(JSON.stringify(p.blocks)), metadata: {}, cache_revision: p.revision } : null;
+    },
+    async update(presetId: string, input: { prompt_order?: Block[]; expected_cache_revision?: number }) {
+      const p = presets.get(presetId);
+      if (!p) throw new Error('Preset not found');
+      if (input.expected_cache_revision === undefined) throw new Error('Preset revision is required for preset updates');
+      if (input.expected_cache_revision !== p.revision) {
+        throw Object.assign(new Error(`Preset ${presetId} changed since revision ${input.expected_cache_revision}; current revision is ${p.revision}`), { code: 'PRESET_REVISION_CONFLICT' });
+      }
+      if (input.prompt_order) p.blocks = JSON.parse(JSON.stringify(input.prompt_order));
+      p.revision++;
+      setTimeout(() => emit('PRESET_CHANGED', { id: presetId }), 0);
+      return { id: p.id };
+    },
     async list() {
       const data = Array.from(presets.values()).map((p) => ({ id: p.id, name: p.name }));
       return { data, total: data.length };
-    },
-    blocks: {
-      async list(presetId: string) {
-        const p = presets.get(presetId);
-        if (!p) throw new Error('Preset not found');
-        return p.blocks.map((b) => ({ ...b }));
-      },
-      async update(presetId: string, blockId: string, input: Partial<Block>) {
-        const p = presets.get(presetId)!;
-        const b = p.blocks.find((x) => x.id === blockId);
-        if (!b) throw new Error('Prompt block not found');
-        Object.assign(b, input);
-        // Lumiverse fires PRESET_CHANGED on every preset save.
-        setTimeout(() => emit('PRESET_CHANGED', { id: presetId }), 0);
-        return { ...b };
-      },
     },
   },
   registerMacro(def: any) { macroHandler = def.handler; },
@@ -119,11 +121,18 @@ beforeAll(async () => {
   chats.set('c1', { chat_variables: { mood: 'calm' } });
   chats.set('c2', {});
   presets.set('p1', {
-    id: 'p1', name: 'Any Preset',
+    id: 'p1', name: 'Any Preset', revision: 1,
     blocks: [
       { id: 'b-main', name: 'Main Instructions', content: 'Be a narrator.', enabled: true, marker: null },
       { id: 'b-hist', name: 'Chat History', content: '', enabled: true, marker: 'chat_history' },
-      { id: 'b-seal', name: 'Sealed', content: '', enabled: true, marker: null, sealed: true },
+    ],
+  });
+  presets.set('p-hub', {
+    id: 'p-hub', name: 'Hub Preset', revision: 1,
+    blocks: [
+      { id: 's-main', name: 'Main', content: 'Open text.', enabled: true, marker: 'main_prompt' },
+      { id: 's-seal', name: 'Sealed', content: '', enabled: true, marker: null, sealed: true, sealedKey: 'k1' },
+      { id: 's-stash', name: 'Shared', content: 'Shared text.', enabled: true, marker: null, stashId: 'st1' },
     ],
   });
   (globalThis as any).spindle = spindle;
@@ -198,13 +207,53 @@ describe('keeping {{modes}} in a preset block', () => {
     expect(p.blocks[0].content).toBe('Be a narrator, v2.\n\n{{modes}}');
     expect(config().presetBlocks.p1.blockId).toBe('b-main-v2');
   });
+  test('in a preset with sealed and shared blocks, only safe blocks are offered', async () => {
+    await send({ type: 'list_blocks', presetId: 'p-hub' });
+    const list = [...sent].reverse().find((p) => p.type === 'blocks_list');
+    expect(list.blocks.map((b: any) => b.id)).toEqual(['s-main']);
+  });
+  test('editing it keeps the sealed and shared blocks exactly as stored', async () => {
+    const before = JSON.parse(JSON.stringify(presets.get('p-hub')!.blocks));
+    await send({ type: 'set_preset_block', presetId: 'p-hub', blockId: 's-main', presetName: 'Hub Preset' });
+    const after = presets.get('p-hub')!.blocks;
+    expect(after[0].content).toBe('Open text.\n\n{{modes}}');
+    expect(after[1]).toEqual(before[1]);
+    expect(after[2]).toEqual(before[2]);
+    await send({ type: 'clear_preset_block', presetId: 'p-hub' });
+    expect(presets.get('p-hub')!.blocks).toEqual(before);
+  });
+  test('a save by the user at the same moment is kept', async () => {
+    const p = presets.get('p1')!;
+    const realGet = spindle.presets.get;
+    let once = true;
+    (spindle.presets as any).get = async (id: string) => {
+      const r = await realGet(id);
+      if (once && id === 'p1') {
+        once = false;
+        // The user saves the preset right after Mode Toggles read it.
+        p.blocks[1] = { ...p.blocks[1], name: 'Chat History (renamed)' };
+        p.revision++;
+      }
+      return r;
+    };
+    try {
+      p.blocks[0] = { ...p.blocks[0], content: 'Be a narrator, v3.' };
+      p.revision++;
+      emit('PRESET_CHANGED', { id: 'p1' });
+      await settle();
+    } finally {
+      (spindle.presets as any).get = realGet;
+    }
+    expect(p.blocks[0].content).toBe('Be a narrator, v3.\n\n{{modes}}');
+    expect(p.blocks[1].name).toBe('Chat History (renamed)');
+  });
   test('removing the choice takes {{modes}} back out', async () => {
     await send({ type: 'clear_preset_block', presetId: 'p1' });
-    expect(presets.get('p1')!.blocks[0].content).toBe('Be a narrator, v2.');
+    expect(presets.get('p1')!.blocks[0].content).toBe('Be a narrator, v3.');
     expect(config().presetBlocks).toEqual({});
     emit('PRESET_CHANGED', { id: 'p1' });
     await settle();
-    expect(presets.get('p1')!.blocks[0].content).toBe('Be a narrator, v2.');
+    expect(presets.get('p1')!.blocks[0].content).toBe('Be a narrator, v3.');
   });
 });
 
