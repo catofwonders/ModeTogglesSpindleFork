@@ -10,7 +10,7 @@
     "build:backend": "bun build src/backend.ts --outfile dist/backend.js --target bun",
     "build:frontend": "bun build src/frontend.ts --outfile dist/frontend.js --target browser",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test tests/chat-store.test.ts tests/preset-blocks.test.ts tests/preset-stress.test.ts && bun test tests/backend-flow.test.ts && bun test tests/operator-scope.test.ts"
   },
   "devDependencies": {
     "lumiverse-spindle-types": "^0.6.13",
