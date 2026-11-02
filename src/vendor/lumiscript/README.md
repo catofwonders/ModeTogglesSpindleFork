@@ -1,14 +1,13 @@
-# Vendored from LumiScript
+# Code adapted from LumiScript
 
-These files are copied **unchanged** from [LumiScript](https://github.com/mindbound/lumiscript) by mindbound (Arets Paeglis), MIT licensed (see `LICENSE` in this folder), at commit `66ac526a4e58ef90fa5cad755a4e6a4741148112` (2026-07-05):
+Mode Toggles uses code adapted from [LumiScript](https://github.com/mindbound/lumiscript) by mindbound (Arets Paeglis), MIT licensed (see `LICENSE` in this folder), at commit `66ac526a4e58ef90fa5cad755a4e6a4741148112` (2026-07-05):
 
-| File | Original path | Used for |
+| In Mode Toggles | From LumiScript | What it does |
 |---|---|---|
-| `interceptor-pipeline.ts` | `src/engine/interceptor-pipeline.ts` | Splicing the modes into the assembled prompt and reporting them in the Prompt Breakdown |
-| `injection-store.ts` | `src/engine/injection-store.ts` | The `InjectionEntry` shape the pipeline works with |
+| `src/chat-store.ts`, `ChatModeStore.save` | `src/engine/api/chat.ts`, `setMetadata` | Saves per-chat data inside the chat's own metadata, with a read-modify-write that only changes one key, and a per-chat queue so two saves can't overwrite each other |
+| (Mode Toggles' addition) | — | The write itself is conditional (Lumiverse's `compareAndSetMetadata`), so a change Lumiverse makes between the read and the write is never overwritten |
+| `src/chat-store.ts`, `createWriteQueue` | the same queue pattern | Makes saves of `config.json` run one after another |
 
-LumiScript's own tests for these files are in `tests/vendor/lumiscript/`, with only their import paths changed. Run them with `bun test`.
+Mode Toggles also uses Lumiverse's preset editing (`spindle.presets`), the host feature LumiScript's `api.presets` gives scripts access to. That part is written for Mode Toggles; LumiScript's own presets code only passes calls through to Lumiverse.
 
-Mode Toggles builds its injection entries itself (`src/placement.ts`) and passes them straight to the pipeline. It does not route them through the injection store's registry, whose 32 KB per-injection limit is meant for user scripts and would cut off large sets of modes.
-
-To update, copy the two files again from a newer LumiScript commit and run `bun test`.
+Version 1.1.0 copied LumiScript's prompt-injection files (`interceptor-pipeline.ts`, `injection-store.ts`). They were removed in 1.2.0, because Mode Toggles no longer adds separate messages to the prompt.
