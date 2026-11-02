@@ -21,6 +21,9 @@ interface StateUpdate {
   settings: {
     loadCoreModes: boolean;
     sortMode: 'group' | 'flat';
+    placement: 'macro' | 'top' | 'before_history' | 'depth';
+    depth: number;
+    framing: string;
   };
 }
 
@@ -316,12 +319,75 @@ export function setup(ctx: SpindleFrontendContext) {
     sortSection.append(sortLbl, sortSelect);
     container.appendChild(sortSection);
 
-    // Modes are inserted via the {{modes}} macro now (fixed injection removed).
-    const macroHint = document.createElement('small');
-    macroHint.className = 'mt-small-label';
-    macroHint.textContent =
-      'Tip: place {{modes}} anywhere in your preset (e.g. a System block) to insert your active modes. Add any framing text around it yourself.';
-    container.appendChild(macroHint);
+    // Where the modes are sent: through {{modes}} in the preset, or placed
+    // directly in the final prompt by the extension.
+    const placeSection = mkEl('div', 'mt-section');
+    const placeLbl = document.createElement('small');
+    placeLbl.className = 'mt-small-label';
+    placeLbl.textContent = 'Where modes are sent';
+    const placeSelect = document.createElement('select') as HTMLSelectElement;
+    placeSelect.className = 'mt-select';
+    const placeOptions: [string, string][] = [
+      ['macro', 'In my preset, where {{modes}} is'],
+      ['top', 'Top of the prompt'],
+      ['before_history', 'Just before chat history'],
+      ['depth', 'At a depth from the end'],
+    ];
+    for (const [val, label] of placeOptions) {
+      const opt = document.createElement('option');
+      opt.value = val;
+      opt.textContent = label;
+      if (val === state.settings.placement) opt.selected = true;
+      placeSelect.appendChild(opt);
+    }
+    placeSelect.addEventListener('change', () =>
+      send({ type: 'update_settings', placement: placeSelect.value }));
+    placeSection.append(placeLbl, placeSelect);
+
+    if (state.settings.placement === 'depth') {
+      const depthRow = mkEl('div');
+      depthRow.style.marginTop = '6px';
+      const depthLbl = document.createElement('small');
+      depthLbl.className = 'mt-small-label';
+      depthLbl.textContent = 'Depth (0 = after the last message)';
+      const depthInput = document.createElement('input') as HTMLInputElement;
+      depthInput.type = 'number';
+      depthInput.min = '0';
+      depthInput.max = '999';
+      depthInput.className = 'mt-input';
+      depthInput.value = String(state.settings.depth);
+      depthInput.addEventListener('change', () =>
+        send({ type: 'update_settings', depth: Number(depthInput.value) }));
+      depthRow.append(depthLbl, depthInput);
+      placeSection.appendChild(depthRow);
+    }
+
+    const placeHint = document.createElement('small');
+    placeHint.className = 'mt-small-label';
+    placeHint.style.display = 'block';
+    placeHint.style.marginTop = '6px';
+    if (state.settings.placement === 'macro') {
+      placeHint.textContent =
+        'Place {{modes}} anywhere in your preset (e.g. a System block) to insert your active modes. Add any framing text around it yourself.';
+      placeSection.appendChild(placeHint);
+    } else {
+      placeHint.textContent =
+        'Modes are placed directly in the prompt, whatever the preset. {{modes}} in a preset now outputs nothing, so turn off any preset block that only held it. Check the Prompt Breakdown for a "Mode Toggles" entry.';
+      const framingLbl = document.createElement('small');
+      framingLbl.className = 'mt-small-label';
+      framingLbl.style.display = 'block';
+      framingLbl.style.marginTop = '6px';
+      framingLbl.textContent = 'Framing (sent with the modes; put {{modes}} where they go, or leave it out to add them at the end)';
+      const framingInput = document.createElement('textarea') as HTMLTextAreaElement;
+      framingInput.className = 'mt-textarea';
+      framingInput.rows = 6;
+      framingInput.value = state.settings.framing;
+      framingInput.placeholder = '[Setting rules for this story...]\n{{modes}}';
+      framingInput.addEventListener('change', () =>
+        send({ type: 'update_settings', framing: framingInput.value }));
+      placeSection.append(placeHint, framingLbl, framingInput);
+    }
+    container.appendChild(placeSection);
 
     // Buttons
     const btnRow = mkEl('div', 'mt-btn-row');

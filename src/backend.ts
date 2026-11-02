@@ -1,6 +1,8 @@
 declare const spindle: import('lumiverse-spindle-types').SpindleAPI;
 
 import { familyOf, naturalCompare } from './search';
+import { applyLumiScriptInjections } from './vendor/lumiscript/interceptor-pipeline';
+import { buildModesEntries, type Placement } from './placement';
 
 // ===== Safe Toast Helper =====
 // Guard in case spindle.toast isn't ready during early init
@@ -35,7 +37,19 @@ interface Config {
   modeOverrides: Record<string, { description: string; group: string }>;
   chatStates: Record<string, Record<string, ModeState>>;
   presets: Record<string, { name: string; modes: string[] }>;
+  // Where the active modes are sent. 'macro' = only through {{modes}} in the
+  // preset (original behaviour). The others place them directly in the final
+  // prompt, independent of the preset (see the interceptor below).
+  placement: Placement;
+  // For placement 'depth': messages counted from the end of the final prompt.
+  depth: number;
+  // Text sent with the modes for non-macro placements. {{modes}} inside it
+  // marks where the modes go; without it the modes follow the framing.
+  framing: string;
 }
+
+const PLACEMENTS: Placement[] = ['macro', 'top', 'before_history', 'depth'];
+const MAX_DEPTH = 999;
 
 // ===== Constants =====
 
@@ -47,6 +61,9 @@ let config: Config = {
   modeOverrides: {},
   chatStates: {},
   presets: {},
+  placement: 'macro',
+  depth: 2,
+  framing: '',
 };
 
 let coreModes: ModeDefinition[] = [];
@@ -56,6 +73,17 @@ let currentUserId: string | undefined;
 // Single-level undo snapshot for destructive actions (Disable All, preset load).
 // Scoped to the chat it was captured in.
 let lastUndo: { chatId: string; label: string; states: Record<string, ModeState> } | null = null;
+
+// ===== Placement Helpers =====
+function normalizePlacement(value: unknown): Placement {
+  return PLACEMENTS.includes(value as Placement) ? (value as Placement) : 'macro';
+}
+
+function normalizeDepth(value: unknown): number {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n < 0) return 2;
+  return Math.min(n, MAX_DEPTH);
+}
 
 // ===== Storage Helpers =====
 async function loadConfig(): Promise<void> {
@@ -72,6 +100,10 @@ async function loadConfig(): Promise<void> {
 
   // Backwards compat: ensure presets exists on old configs
   if (!config.presets) config.presets = {};
+  // Backwards compat: placement settings are new; older configs keep the macro.
+  config.placement = normalizePlacement(config.placement);
+  config.depth = normalizeDepth(config.depth);
+  if (typeof config.framing !== 'string') config.framing = '';
 
   // Migrate: 'ON' is the only persisted state now. Old 'OFF'/countdown/transition
   // entries no longer mean anything, so strip them and drop empty buckets.
@@ -445,6 +477,9 @@ function sendStateToFrontend(): void {
     settings: {
       loadCoreModes: config.loadCoreModes,
       sortMode: config.sortMode,
+      placement: config.placement,
+      depth: config.depth,
+      framing: config.framing,
     },
   });
 }
@@ -523,8 +558,57 @@ function orderForOutput<T extends { name: string; group: string }>(list: T[]): T
 // menu is used. The raw descriptions are returned macros and all: Lumiverse
 // expands any {{user}}, {{random}} etc. in the result for every generation.
 function resolveModesMacro(ctx: { chatId?: unknown } | undefined): string {
+  // With a direct placement the interceptor sends the modes; {{modes}} stays
+  // empty so a preset that still contains it doesn't send them twice.
+  if (config.placement !== 'macro') return '';
   const chatId = typeof ctx?.chatId === 'string' && ctx.chatId ? ctx.chatId : currentChatId;
   return buildModesRawText(chatId);
+}
+
+// ===== Direct placement (interceptor) =====
+// Uses LumiScript's interceptor pipeline (MIT, mindbound,
+// https://github.com/mindbound/lumiscript), vendored unchanged in
+// src/vendor/lumiscript: it splices injections into the fully assembled
+// prompt and reports each one in the Prompt Breakdown. Mode Toggles only
+// supplies the text (this chat's framing + active modes) and, in
+// src/placement.ts, where it goes. So where the modes land no longer depends
+// on where each preset puts {{modes}}.
+function buildInjectionTemplate(chatId: string): string {
+  const modesText = buildModesRawText(chatId);
+  if (!modesText) return '';
+  const framing = config.framing.trim();
+  if (!framing) return modesText;
+  // Replace our own placeholder before macro resolution, so the (now empty)
+  // {{modes}} macro is never asked for a value here.
+  if (framing.includes('{{modes}}')) return framing.split('{{modes}}').join(modesText);
+  return `${framing}\n${modesText}`;
+}
+
+async function placeModes(messages: any[], context: { chatId?: string; isDryRun?: boolean }) {
+  if (!config.enabled || config.placement === 'macro') return messages;
+  const chatId = typeof context?.chatId === 'string' && context.chatId ? context.chatId : currentChatId;
+  const template = buildInjectionTemplate(chatId);
+  if (!template) return messages;
+
+  // Interceptors run after prompt assembly, so macros ({{user}}, {{char}},
+  // {{random}}…) are resolved here, the way the preset would have resolved them.
+  let content = template;
+  try {
+    const { text } = await spindle.macros.resolve(template, { chatId, commit: !context?.isDryRun });
+    content = text;
+  } catch (e) {
+    spindle.log.warn(`Mode Toggles: macro resolution failed, sending modes unresolved: ${e}`);
+  }
+
+  const entries = buildModesEntries(messages, config.placement, config.depth, content);
+  if (entries.context.length === 0 && entries.intercept.length === 0) return messages;
+
+  const { messages: result, breakdown } = applyLumiScriptInjections(
+    messages, entries.context, entries.intercept, () => 'Mode Toggles',
+  );
+  // Same return convention as LumiScript: the object form only when there is
+  // breakdown data to attach.
+  return breakdown.length > 0 ? { messages: result, breakdown } : result;
 }
 
 spindle.onFrontendMessage(async (payload: any, userId?: string) => {
@@ -568,6 +652,9 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
     case 'update_settings':
       if (payload.loadCoreModes !== undefined) config.loadCoreModes = payload.loadCoreModes;
       if (payload.sortMode !== undefined) config.sortMode = payload.sortMode === 'flat' ? 'flat' : 'group';
+      if (payload.placement !== undefined) config.placement = normalizePlacement(payload.placement);
+      if (payload.depth !== undefined) config.depth = normalizeDepth(payload.depth);
+      if (typeof payload.framing === 'string') config.framing = payload.framing;
       await saveConfig();
       sendStateToFrontend();
       break;
@@ -727,6 +814,9 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         enabled: config.enabled,
         loadCoreModes: config.loadCoreModes,
         sortMode: config.sortMode,
+        placement: config.placement,
+        depth: config.depth,
+        framing: config.framing,
         modeOverrides: config.modeOverrides,
         presets: config.presets,
       };
@@ -744,6 +834,9 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       if (typeof incoming.enabled === 'boolean') config.enabled = incoming.enabled;
       if (typeof incoming.loadCoreModes === 'boolean') config.loadCoreModes = incoming.loadCoreModes;
       if (incoming.sortMode === 'group' || incoming.sortMode === 'flat') config.sortMode = incoming.sortMode;
+      if (incoming.placement !== undefined) config.placement = normalizePlacement(incoming.placement);
+      if (incoming.depth !== undefined) config.depth = normalizeDepth(incoming.depth);
+      if (typeof incoming.framing === 'string') config.framing = incoming.framing;
       // Validate shapes: a malformed entry would otherwise print "undefined"
       // into {{modes}} or crash Tidy.
       let skipped = 0;
@@ -798,6 +891,7 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         enabled: true, loadCoreModes: true,
         sortMode: 'group',
         modeOverrides: {}, chatStates: {}, presets: preservedPresets,
+        placement: 'macro', depth: 2, framing: '',
       };
       lastUndo = null;
       await saveConfig();
@@ -995,6 +1089,14 @@ spindle.permissions.onDenied(({ permission, operation }) => {
     // The runtime accepts a function handler; the published types still say string.
     handler: resolveModesMacro as unknown as string,
   });
+
+  // Direct placement. Runs late (high priority number) so 'top' really is
+  // the top and depths are counted on the final message list.
+  try {
+    spindle.registerInterceptor(placeModes as any, 900);
+  } catch (e) {
+    spindle.log.warn(`Mode Toggles: interceptor unavailable (grant the "interceptor" permission): ${e}`);
+  }
 
   sendStateToFrontend();
 })();
