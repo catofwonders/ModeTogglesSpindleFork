@@ -8,6 +8,7 @@ Toggle non-diegetic "modifier" modes on and off per chat, then drop them anywher
 
 - **340+ built-in modes** in groups such as Visual & Aesthetic, Genre & Cinematic, Social & Power, Abstract & Metaphysical, Narrative & Story, Temporal & Physics and more
 - **`{{modes}}` macro**: place your active modes anywhere in your Loom preset instead of a fixed injection point
+- **Direct placement**: or let the extension place your framing and active modes in the final prompt itself (top of the prompt, just before chat history, or at a depth from the end), the same in every preset, shown in the Prompt Breakdown
 - **Macros inside modes**: `{{user}}`, `{{char}}` and other Lumiverse macros in a mode's description are resolved fresh at every generation, so `{{char}}` follows whoever is speaking in group chats
 - **Per-chat state**: each chat remembers which modes are ON
 - **Presets**: save the current chat's active modes, then load (replace) or merge them into any chat
@@ -53,6 +54,23 @@ How the macro behaves:
 - It outputs **only the descriptions** of the modes that are ON in the current chat, separated by blank lines. Mode names and groups are not included.
 - It outputs **nothing** when no modes are ON, so any framing you write around it will still appear. Keep the framing short or neutral.
 - It updates automatically when you toggle modes or switch chats.
+
+## Direct placement (optional)
+
+By default the modes go wherever your preset has `{{modes}}`. In the **Mode Toggles** drawer tab, **Where modes are sent** can instead place them directly in the prompt, after the preset has been assembled:
+
+- **Top of the prompt**: the very first message, before everything else
+- **Just before chat history**: after the preset's opening blocks, right before the conversation
+- **At a depth from the end**: counted in messages from the end of the final prompt; `0` is after the last message, and a depth larger than the prompt puts it at the top
+
+With a direct placement:
+
+- A **Framing** box appears. Its text is sent together with the modes; put `{{modes}}` where the modes go, or leave it out to add them after the framing. Macros such as `{{user}}` are resolved as usual.
+- `{{modes}}` in a preset outputs nothing, so the modes are never sent twice. Turn off any preset block that only held `{{modes}}` and its framing.
+- Nothing is sent when no modes are ON.
+- The Prompt Breakdown lists the placed text as **Mode Toggles**, so you can check where it landed.
+
+This needs the `interceptor` permission.
 
 ## Using the quick toggle menu
 
@@ -108,6 +126,7 @@ Tips:
 | Permission | Why |
 |---|---|
 | `chats` | Detects the active chat so toggles are stored per chat |
+| `interceptor` | Places the modes directly in the final prompt (only with a direct placement) |
 
 ## Extension structure
 
@@ -115,8 +134,11 @@ Tips:
 ModeTogglesSpindleFork/
 ├── spindle.json          # Extension manifest
 ├── src/
-│   ├── backend.ts        # Storage, per-chat state, presets, {{modes}} macro
-│   └── frontend.ts       # Drawer settings tab + input bar toggle menu
+│   ├── backend.ts        # Storage, per-chat state, presets, {{modes}} macro, direct placement
+│   ├── frontend.ts       # Drawer settings tab + input bar toggle menu
+│   ├── placement.ts      # Where direct placement puts the modes
+│   └── vendor/lumiscript # LumiScript's prompt-injection pipeline (MIT, unchanged)
+├── tests/                # bun test: placement + LumiScript's own tests
 ├── defaults/
 │   ├── config.json       # Default settings (seeded to storage on install)
 │   └── modes/            # Built-in mode files (seeded to storage)
@@ -144,6 +166,8 @@ ModeTogglesSpindleFork/
 ## Credits
 
 Based on [st-mode-toggles](https://github.com/dfaker/st-mode-toggles) by dfaker. Spindle port by catofwonders.
+
+Direct placement uses the interceptor pipeline from [LumiScript](https://github.com/mindbound/lumiscript) by mindbound (MIT), vendored unchanged in `src/vendor/lumiscript` with its license and tests.
 
 ## License
 
