@@ -21,11 +21,12 @@ interface StateUpdate {
   settings: {
     loadCoreModes: boolean;
     sortMode: 'group' | 'flat';
-    placement: 'macro' | 'top' | 'before_history' | 'depth';
-    depth: number;
     framing: string;
   };
+  presetBlocks: Array<{ presetId: string; presetName: string; blockName: string }>;
 }
+
+interface BlockOption { id: string; name: string; enabled: boolean; isCategory: boolean }
 
 interface ExportData {
   type: 'export_data';
@@ -44,6 +45,13 @@ export function setup(ctx: SpindleFrontendContext) {
   let tab: any = null;
   let toggleAction: any = null;
   let currentChatId: string = '';
+  // Picker for "{{modes}} inside a preset block" (filled on request).
+  let presetList: Array<{ id: string; name: string }> | null = null;
+  let presetListError = '';
+  let pickerPresetId = '';
+  let pickerBlocks: BlockOption[] | null = null;
+  let pickerBlockId = '';
+  let pickerError = '';
 
   // Helper: send message to backend, always including chatId
   function send(payload: Record<string, any>) {
@@ -175,6 +183,17 @@ export function setup(ctx: SpindleFrontendContext) {
       downloadText(data.text, slug ? `mode-toggles-${slug}.txt` : 'mode-toggles-export.txt', 'text/plain');
     } else if (payload.type === 'export_config_data') {
       downloadText(payload.json, 'mode-toggles-config.json', 'application/json');
+    } else if (payload.type === 'presets_list') {
+      presetList = Array.isArray(payload.presets) ? payload.presets : [];
+      presetListError = payload.error ? String(payload.error) : '';
+      renderSettingsTab();
+    } else if (payload.type === 'blocks_list') {
+      if (payload.presetId !== pickerPresetId) return; // an older request
+      pickerBlocks = Array.isArray(payload.blocks) ? payload.blocks : [];
+      pickerError = payload.error ? String(payload.error) : '';
+      pickerBlockId = payload.selectedId && pickerBlocks!.some((b) => b.id === payload.selectedId)
+        ? payload.selectedId : '';
+      renderSettingsTab();
     } else if (payload.type === 'import_preview') {
       showImportPreview(payload.text, payload.report);
     } else if (payload.type === 'tidy_report') {
@@ -189,7 +208,7 @@ export function setup(ctx: SpindleFrontendContext) {
           `${r.orphanToggles} orphaned toggle(s) (modes no longer exist)`,
           `${r.deadPresetRefs} dead preset reference(s)`,
           `${r.emptyPresets} empty preset(s)`,
-          `${r.emptyChatBuckets} empty chat state bucket(s)`,
+          `${r.emptyChatBuckets} leftover entr${r.emptyChatBuckets === 1 ? 'y' : 'ies'} for deleted chats`,
         ].filter((_, i) => [r.orphanToggles, r.deadPresetRefs, r.emptyPresets, r.emptyChatBuckets][i] > 0);
         showThemedConfirm(
           'Clean up the following?\n\n• ' + lines.join('\n• '),
@@ -319,75 +338,141 @@ export function setup(ctx: SpindleFrontendContext) {
     sortSection.append(sortLbl, sortSelect);
     container.appendChild(sortSection);
 
-    // Where the modes are sent: through {{modes}} in the preset, or placed
-    // directly in the final prompt by the extension.
+    // How modes reach the prompt: {{modes}} in the preset, wherever the user
+    // put it, or kept by Mode Toggles at the end of a block picked per preset.
     const placeSection = mkEl('div', 'mt-section');
-    const placeLbl = document.createElement('small');
-    placeLbl.className = 'mt-small-label';
-    placeLbl.textContent = 'Where modes are sent';
-    const placeSelect = document.createElement('select') as HTMLSelectElement;
-    placeSelect.className = 'mt-select';
-    const placeOptions: [string, string][] = [
-      ['macro', 'In my preset, where {{modes}} is'],
-      ['top', 'Top of the prompt'],
-      ['before_history', 'Just before chat history'],
-      ['depth', 'At a depth from the end'],
-    ];
-    for (const [val, label] of placeOptions) {
-      const opt = document.createElement('option');
-      opt.value = val;
-      opt.textContent = label;
-      if (val === state.settings.placement) opt.selected = true;
-      placeSelect.appendChild(opt);
-    }
-    placeSelect.addEventListener('change', () =>
-      send({ type: 'update_settings', placement: placeSelect.value }));
-    placeSection.append(placeLbl, placeSelect);
-
-    if (state.settings.placement === 'depth') {
-      const depthRow = mkEl('div');
-      depthRow.style.marginTop = '6px';
-      const depthLbl = document.createElement('small');
-      depthLbl.className = 'mt-small-label';
-      depthLbl.textContent = 'Depth (0 = after the last message)';
-      const depthInput = document.createElement('input') as HTMLInputElement;
-      depthInput.type = 'number';
-      depthInput.min = '0';
-      depthInput.max = '999';
-      depthInput.className = 'mt-input';
-      depthInput.value = String(state.settings.depth);
-      depthInput.addEventListener('change', () =>
-        send({ type: 'update_settings', depth: Number(depthInput.value) }));
-      depthRow.append(depthLbl, depthInput);
-      placeSection.appendChild(depthRow);
-    }
-
     const placeHint = document.createElement('small');
     placeHint.className = 'mt-small-label';
     placeHint.style.display = 'block';
-    placeHint.style.marginTop = '6px';
-    if (state.settings.placement === 'macro') {
-      placeHint.textContent =
-        'Place {{modes}} anywhere in your preset (e.g. a System block) to insert your active modes. Add any framing text around it yourself.';
-      placeSection.appendChild(placeHint);
-    } else {
-      placeHint.textContent =
-        'Modes are placed directly in the prompt, whatever the preset. {{modes}} in a preset now outputs nothing, so turn off any preset block that only held it. Check the Prompt Breakdown for a "Mode Toggles" entry.';
-      const framingLbl = document.createElement('small');
-      framingLbl.className = 'mt-small-label';
-      framingLbl.style.display = 'block';
-      framingLbl.style.marginTop = '6px';
-      framingLbl.textContent = 'Framing (sent with the modes; put {{modes}} where they go, or leave it out to add them at the end)';
-      const framingInput = document.createElement('textarea') as HTMLTextAreaElement;
-      framingInput.className = 'mt-textarea';
-      framingInput.rows = 6;
-      framingInput.value = state.settings.framing;
-      framingInput.placeholder = '[Setting rules for this story...]\n{{modes}}';
-      framingInput.addEventListener('change', () =>
-        send({ type: 'update_settings', framing: framingInput.value }));
-      placeSection.append(placeHint, framingLbl, framingInput);
-    }
+    placeHint.textContent =
+      'Your active modes are sent wherever {{modes}} is in your preset. Put it there yourself, or pick a block below and Mode Toggles keeps it there for you.';
+    placeSection.appendChild(placeHint);
+
+    // Framing
+    const framingLbl = document.createElement('small');
+    framingLbl.className = 'mt-small-label';
+    framingLbl.style.display = 'block';
+    framingLbl.style.marginTop = '8px';
+    framingLbl.textContent =
+      'Framing (optional): sent with your modes wherever {{modes}} is. Put {{modes}} where the modes go, or leave it out to add them at the end. Leave this empty if your preset already has framing around {{modes}}.';
+    const framingInput = document.createElement('textarea') as HTMLTextAreaElement;
+    framingInput.className = 'mt-textarea';
+    framingInput.rows = 6;
+    framingInput.value = state.settings.framing;
+    framingInput.placeholder = '[Setting rules for this story...]\n{{modes}}';
+    framingInput.addEventListener('change', () =>
+      send({ type: 'update_settings', framing: framingInput.value }));
+    placeSection.append(framingLbl, framingInput);
     container.appendChild(placeSection);
+
+    // {{modes}} inside a chosen block, per preset
+    const blockSection = mkEl('div', 'mt-section');
+    const blockTitle = document.createElement('small');
+    blockTitle.className = 'mt-small-label';
+    blockTitle.style.fontWeight = '600';
+    blockTitle.textContent = 'Keep {{modes}} inside a preset block';
+    const blockHint = document.createElement('small');
+    blockHint.className = 'mt-small-label';
+    blockHint.textContent =
+      'Pick a preset, then the block your rules belong in (usually its main instructions). Mode Toggles adds {{modes}} to the end of that block, and puts it back if a preset update removes it. Turn off any other block in that preset that also has {{modes}}, so the modes aren\'t sent twice.';
+    blockSection.append(blockTitle, blockHint);
+
+    // Current choices
+    for (const a of state.presetBlocks || []) {
+      const row = mkEl('div', 'mt-preset-row');
+      const name = mkEl('span', 'mt-preset-name');
+      name.textContent = a.presetName;
+      const where = mkEl('span', 'mt-preset-count');
+      where.textContent = `→ ${a.blockName}`;
+      const clearBtn = document.createElement('button');
+      clearBtn.className = 'mt-preset-btn mt-preset-btn-delete';
+      clearBtn.textContent = 'Remove';
+      clearBtn.title = 'Stop keeping {{modes}} in this block, and remove the {{modes}} Mode Toggles added';
+      clearBtn.addEventListener('click', () =>
+        showThemedConfirm(`Remove {{modes}} from "${a.blockName}" in "${a.presetName}"?`, () =>
+          send({ type: 'clear_preset_block', presetId: a.presetId })));
+      row.append(name, where, clearBtn);
+      blockSection.appendChild(row);
+    }
+
+    if (presetList === null) {
+      const loadBtn = document.createElement('button');
+      loadBtn.className = 'mt-btn';
+      loadBtn.style.marginTop = '6px';
+      loadBtn.textContent = 'Choose a preset block…';
+      loadBtn.addEventListener('click', () => send({ type: 'list_presets' }));
+      blockSection.appendChild(loadBtn);
+    } else {
+      const presetSelect = document.createElement('select') as HTMLSelectElement;
+      presetSelect.className = 'mt-select';
+      presetSelect.style.cssText = 'display:block;width:100%;margin-top:6px;';
+      const none = document.createElement('option');
+      none.value = '';
+      none.textContent = presetList.length ? 'Choose a preset…' : 'No presets found';
+      presetSelect.appendChild(none);
+      for (const p of presetList) {
+        const opt = document.createElement('option');
+        opt.value = p.id;
+        opt.textContent = p.name;
+        if (p.id === pickerPresetId) opt.selected = true;
+        presetSelect.appendChild(opt);
+      }
+      presetSelect.addEventListener('change', () => {
+        pickerPresetId = presetSelect.value;
+        pickerBlocks = null;
+        pickerBlockId = '';
+        pickerError = '';
+        if (pickerPresetId) send({ type: 'list_blocks', presetId: pickerPresetId });
+        renderSettingsTab();
+      });
+      blockSection.appendChild(presetSelect);
+      if (presetListError) {
+        const err = document.createElement('small');
+        err.className = 'mt-small-label';
+        err.textContent = `Couldn't read your presets (grant the "presets" permission): ${presetListError}`;
+        blockSection.appendChild(err);
+      }
+
+      if (pickerPresetId && pickerBlocks === null) {
+        const wait = document.createElement('small');
+        wait.className = 'mt-small-label';
+        wait.textContent = 'Loading blocks…';
+        blockSection.appendChild(wait);
+      } else if (pickerPresetId && pickerBlocks) {
+        const blockSelect = document.createElement('select') as HTMLSelectElement;
+        blockSelect.className = 'mt-select';
+        blockSelect.style.cssText = 'display:block;width:100%;margin-top:6px;';
+        const pick = document.createElement('option');
+        pick.value = '';
+        pick.textContent = pickerBlocks.length ? 'Choose a block…' : 'No blocks that can hold text';
+        blockSelect.appendChild(pick);
+        for (const b of pickerBlocks) {
+          const opt = document.createElement('option');
+          opt.value = b.id;
+          opt.textContent = `${b.isCategory ? '▸ ' : ''}${b.name || '(unnamed)'}${b.enabled ? '' : ' (off)'}`;
+          if (b.id === pickerBlockId) opt.selected = true;
+          blockSelect.appendChild(opt);
+        }
+        blockSelect.addEventListener('change', () => { pickerBlockId = blockSelect.value; });
+        const applyBtn = document.createElement('button');
+        applyBtn.className = 'mt-btn';
+        applyBtn.style.marginTop = '6px';
+        applyBtn.textContent = 'Keep {{modes}} in this block';
+        applyBtn.addEventListener('click', () => {
+          if (!pickerBlockId) return;
+          const presetName = presetList?.find((p) => p.id === pickerPresetId)?.name ?? '';
+          send({ type: 'set_preset_block', presetId: pickerPresetId, blockId: pickerBlockId, presetName });
+        });
+        blockSection.append(blockSelect, applyBtn);
+        if (pickerError) {
+          const err = document.createElement('small');
+          err.className = 'mt-small-label';
+          err.textContent = `Couldn't read this preset's blocks: ${pickerError}`;
+          blockSection.appendChild(err);
+        }
+      }
+    }
+    container.appendChild(blockSection);
 
     // Buttons
     const btnRow = mkEl('div', 'mt-btn-row');

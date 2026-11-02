@@ -1,8 +1,11 @@
 declare const spindle: import('lumiverse-spindle-types').SpindleAPI;
 
 import { familyOf, naturalCompare } from './search';
-import { applyLumiScriptInjections } from './vendor/lumiscript/interceptor-pipeline';
-import { buildModesEntries, type Placement } from './placement';
+import { ChatModeStore, createWriteQueue, type ChatModes } from './chat-store';
+import {
+  applyFraming, findAssignedBlock, pickableBlocks, withModesTag, withoutAddedModesTag, hasModesTag,
+  type BlockAssignment,
+} from './preset-blocks';
 
 // ===== Safe Toast Helper =====
 // Guard in case spindle.toast isn't ready during early init
@@ -20,9 +23,7 @@ interface ModeDefinition {
   description: string;
 }
 
-interface ModeState {
-  status: 'OFF' | 'ON';
-}
+type ModeState = ChatModes[string];
 
 interface ModeView extends ModeDefinition {
   status: string;
@@ -35,23 +36,18 @@ interface Config {
   loadCoreModes: boolean;
   sortMode: 'group' | 'flat';
   modeOverrides: Record<string, { description: string; group: string }>;
+  // Old storage: every chat's modes in this file. Chats now keep their own
+  // modes (see chat-store.ts); entries here are moved into their chat the
+  // first time that chat is opened, and dropped if the chat no longer exists.
   chatStates: Record<string, Record<string, ModeState>>;
   presets: Record<string, { name: string; modes: string[] }>;
-  // Where the active modes are sent. 'macro' = only through {{modes}} in the
-  // preset (original behaviour). The others place them directly in the final
-  // prompt, independent of the preset (see the interceptor below).
-  placement: Placement;
-  // For placement 'depth': messages counted from the end of the final prompt.
-  depth: number;
-  // Text sent with the modes for non-macro placements. {{modes}} inside it
-  // marks where the modes go; without it the modes follow the framing.
+  // Text sent with the modes wherever {{modes}} is. {{modes}} inside it marks
+  // where the modes go; without it the modes follow the framing. Empty = the
+  // modes alone, as before.
   framing: string;
+  // Per preset (by preset id): the block that holds {{modes}}.
+  presetBlocks: Record<string, BlockAssignment>;
 }
-
-const PLACEMENTS: Placement[] = ['macro', 'top', 'before_history', 'depth'];
-const MAX_DEPTH = 999;
-
-// ===== Constants =====
 
 // ===== State =====
 let config: Config = {
@@ -61,9 +57,8 @@ let config: Config = {
   modeOverrides: {},
   chatStates: {},
   presets: {},
-  placement: 'macro',
-  depth: 2,
   framing: '',
+  presetBlocks: {},
 };
 
 let coreModes: ModeDefinition[] = [];
@@ -74,15 +69,95 @@ let currentUserId: string | undefined;
 // Scoped to the chat it was captured in.
 let lastUndo: { chatId: string; label: string; states: Record<string, ModeState> } | null = null;
 
-// ===== Placement Helpers =====
-function normalizePlacement(value: unknown): Placement {
-  return PLACEMENTS.includes(value as Placement) ? (value as Placement) : 'macro';
+// ===== Per-chat modes (stored in each chat) =====
+let warnedNoConditionalWrite = false;
+const chatStore = new ChatModeStore(
+  {
+    async read(chatId) {
+      const chat = await spindle.chats.get(chatId, currentUserId);
+      return chat ? (chat.metadata ?? {}) : null;
+    },
+    async write(chatId, metadata, expected) {
+      // Conditional write: lands only if the chat's metadata still equals
+      // what was read (needs the chat_mutation permission).
+      try {
+        const saved = await spindle.chats.compareAndSetMetadata(
+          chatId, { expected_metadata: expected, metadata }, currentUserId);
+        if (saved) return 'ok';
+        return (await spindle.chats.get(chatId, currentUserId)) ? 'conflict' : 'gone';
+      } catch (e) {
+        if (!/chat_mutation|not a function/i.test(String(e))) throw e;
+        // Permission not granted (or an older Lumiverse): plain write, so
+        // toggles still save, and say once how to make it safe.
+        if (!warnedNoConditionalWrite) {
+          warnedNoConditionalWrite = true;
+          spindle.log.warn(`Mode Toggles: safe chat saves unavailable (${e}); using plain saves`);
+          toast.warning('Mode Toggles: grant the "chat_mutation" permission so saving modes can never overwrite other chat data.');
+        }
+        await spindle.chats.update(chatId, { metadata }, currentUserId);
+        return 'ok';
+      }
+    },
+  },
+  (chatId) => config.chatStates[chatId],
+  (chatId) => {
+    delete config.chatStates[chatId];
+    saveConfig();
+  },
+);
+
+// A chat id that isn't a real chat (no chat open) is kept in memory only.
+function isRealChat(chatId: string): boolean {
+  return !!chatId && chatId !== 'default';
 }
 
-function normalizeDepth(value: unknown): number {
-  const n = Math.floor(Number(value));
-  if (!Number.isFinite(n) || n < 0) return 2;
-  return Math.min(n, MAX_DEPTH);
+async function loadChat(chatId: string): Promise<void> {
+  if (isRealChat(chatId)) await chatStore.load(chatId);
+}
+
+async function saveChat(chatId: string): Promise<void> {
+  if (!isRealChat(chatId)) return;
+  try {
+    await chatStore.save(chatId);
+  } catch (e) {
+    spindle.log.error(`Failed to save modes for chat ${chatId}: ${e}`);
+  }
+}
+
+// Every chat that has modes, from Lumiverse's chat list plus any old entries
+// still in config.json. `change` edits the modes in place and returns true
+// when it changed something; changed chats are saved.
+async function forEachChatWithModes(change: (modes: ChatModes) => boolean): Promise<void> {
+  await chatStore.flush();
+  // Move old entries into their chats first, so they're edited in one place.
+  for (const chatId of Object.keys(config.chatStates)) await loadChat(chatId);
+
+  const limit = 100;
+  for (let offset = 0; ; offset += limit) {
+    let page: { data: Array<{ id: string; metadata: Record<string, unknown> }>; total: number };
+    try {
+      page = await spindle.chats.list({ limit, offset, userId: currentUserId });
+    } catch (e) {
+      spindle.log.warn(`Could not list chats: ${e}`);
+      break;
+    }
+    for (const chat of page.data) {
+      if (!chatStore.isLoaded(chat.id) && !Array.isArray(chat.metadata?.mode_toggles)) continue;
+      const modes = await chatStore.load(chat.id);
+      if (change(modes)) await saveChat(chat.id);
+    }
+    if (page.data.length < limit || offset + limit >= page.total) break;
+  }
+
+  // Old entries that couldn't be moved (chat unreachable right now).
+  let legacyChanged = false;
+  for (const states of Object.values(config.chatStates)) {
+    if (change(states)) legacyChanged = true;
+  }
+  for (const [chatId, states] of Object.entries(config.chatStates)) {
+    if (Object.keys(states).length === 0) { delete config.chatStates[chatId]; legacyChanged = true; }
+  }
+  if (legacyChanged) await saveConfig();
 }
 
 // ===== Storage Helpers =====
@@ -100,14 +175,22 @@ async function loadConfig(): Promise<void> {
 
   // Backwards compat: ensure presets exists on old configs
   if (!config.presets) config.presets = {};
-  // Backwards compat: placement settings are new; older configs keep the macro.
-  config.placement = normalizePlacement(config.placement);
-  config.depth = normalizeDepth(config.depth);
+  if (!config.chatStates || typeof config.chatStates !== 'object') config.chatStates = {};
   if (typeof config.framing !== 'string') config.framing = '';
+  if (!config.presetBlocks || typeof config.presetBlocks !== 'object') config.presetBlocks = {};
+
+  let dirty = false;
+  // 1.1.0's position settings were removed.
+  const loose = config as unknown as Record<string, unknown>;
+  for (const key of ['placement', 'depth']) {
+    if (loose[key] !== undefined) {
+      delete loose[key];
+      dirty = true;
+    }
+  }
 
   // Migrate: 'ON' is the only persisted state now. Old 'OFF'/countdown/transition
   // entries no longer mean anything, so strip them and drop empty buckets.
-  let dirty = false;
   for (const chatId of Object.keys(config.chatStates)) {
     const states = config.chatStates[chatId];
     for (const [name, st] of Object.entries(states)) {
@@ -138,12 +221,18 @@ async function loadConfig(): Promise<void> {
   if (dirty) saveConfig();
 }
 
-async function saveConfig(): Promise<void> {
-  try {
-    await spindle.storage.setJson('config.json', config, { indent: 2 });
-  } catch (e) {
-    spindle.log.error(`Failed to save config: ${e}`);
-  }
+// Saves go through a queue (LumiScript's serialization pattern), so two saves
+// close together can't finish out of order and leave an older config on disk.
+const configWrites = createWriteQueue();
+
+function saveConfig(): Promise<void> {
+  return configWrites(async () => {
+    try {
+      await spindle.storage.setJson('config.json', config, { indent: 2 });
+    } catch (e) {
+      spindle.log.error(`Failed to save config: ${e}`);
+    }
+  });
 }
 
 // ===== Chat Resolution =====
@@ -233,17 +322,15 @@ function getEffectiveModes(): ModeDefinition[] {
   return Array.from(baseMap.values());
 }
 
-// Create-on-access: use ONLY on write paths (toggling a mode on, etc.).
+// Write paths (toggling a mode on, etc.): the chat's modes, editable in place.
+// Call loadChat(chatId) first and saveChat(chatId) after.
 function getChatState(chatId: string): Record<string, ModeState> {
-  if (!config.chatStates[chatId]) config.chatStates[chatId] = {};
-  return config.chatStates[chatId];
+  return chatStore.edit(chatId);
 }
 
-// Read-only: never creates or persists an empty bucket. Use on read paths
-// (rendering, snapshots, interceptor) so merely viewing a chat doesn't leave
-// an empty {} bucket behind in storage.
+// Read paths: the chat's loaded modes; nothing is created or saved.
 function peekChatState(chatId: string): Record<string, ModeState> {
-  return config.chatStates[chatId] || {};
+  return chatStore.peek(chatId);
 }
 
 function getModesView(chatId: string): ModeView[] {
@@ -405,23 +492,19 @@ interface TidyReport {
   orphanToggles: number;   // per-chat toggles pointing at modes that no longer exist
   emptyPresets: number;    // presets with nothing live left in them
   deadPresetRefs: number;  // preset entries pointing at modes that no longer exist
-  emptyChatBuckets: number;// chat state buckets with no toggles left
+  emptyChatBuckets: number;// old config.json entries for chats that no longer exist
 }
 
-function computeTidyReport(): TidyReport {
+async function computeTidyReport(): Promise<TidyReport> {
   const effective = knownModeNames();
   let orphanToggles = 0;
-  let emptyChatBuckets = 0;
-  for (const [cid, states] of Object.entries(config.chatStates)) {
-    const names = Object.keys(states);
-    let live = 0;
-    for (const name of names) {
-      if (effective.has(name)) live++; else orphanToggles++;
-    }
-    // The active chat always has (or instantly regains) a bucket, so don't
-    // count it as cleanable — otherwise "tidy" could never report zero.
-    if ((names.length === 0 || live === 0) && cid !== currentChatId) emptyChatBuckets++;
-  }
+  // Moving old entries into their chats drops the ones whose chat is gone.
+  const legacyBefore = Object.keys(config.chatStates).length;
+  await forEachChatWithModes((modes) => {
+    for (const name of Object.keys(modes)) if (!effective.has(name)) orphanToggles++;
+    return false;
+  });
+  const emptyChatBuckets = legacyBefore - Object.keys(config.chatStates).length;
   let emptyPresets = 0;
   let deadPresetRefs = 0;
   for (const p of Object.values(config.presets)) {
@@ -432,15 +515,16 @@ function computeTidyReport(): TidyReport {
   return { orphanToggles, emptyPresets, deadPresetRefs, emptyChatBuckets };
 }
 
-function applyTidy(): void {
+async function applyTidy(): Promise<void> {
   const effective = knownModeNames();
-  // Drop orphaned toggles, then drop now-empty chat buckets.
-  for (const [cid, states] of Object.entries(config.chatStates)) {
-    for (const name of Object.keys(states)) {
-      if (!effective.has(name)) delete states[name];
+  // Drop orphaned toggles in every chat.
+  await forEachChatWithModes((modes) => {
+    let changed = false;
+    for (const name of Object.keys(modes)) {
+      if (!effective.has(name)) { delete modes[name]; changed = true; }
     }
-    if (Object.keys(states).length === 0) delete config.chatStates[cid];
-  }
+    return changed;
+  });
   // Strip dead references from presets, drop presets left empty.
   for (const [key, p] of Object.entries(config.presets)) {
     p.modes = p.modes.filter((n) => effective.has(n));
@@ -477,18 +561,19 @@ function sendStateToFrontend(): void {
     settings: {
       loadCoreModes: config.loadCoreModes,
       sortMode: config.sortMode,
-      placement: config.placement,
-      depth: config.depth,
       framing: config.framing,
     },
+    presetBlocks: Object.entries(config.presetBlocks)
+      .map(([presetId, a]) => ({ presetId, presetName: a.presetName, blockName: a.blockName }))
+      .sort((a, b) => a.presetName.localeCompare(b.presetName)),
   });
 }
 
 // ===== {{modes}} macro (pull model) =====
 // Exposes the current chat's ON modes as a macro the user can place anywhere in
-// their Loom preset (e.g. inside a System block), instead of relying on fixed
-// injection. Outputs ONLY the mode descriptions, blank-line separated, with no
-// framing — the user writes any framing around the tag in their prompt.
+// their Loom preset (e.g. inside a System block), or that Mode Toggles keeps in
+// a block the user picked per preset. Outputs the mode descriptions,
+// blank-line separated, inside the Framing text when one is set.
 
 // Text sent to the model. No headings or names: only descriptions, so it reads
 // as plain rules continuing the user's framing. Structure is carried by layout:
@@ -555,60 +640,81 @@ function orderForOutput<T extends { name: string; group: string }>(list: T[]): T
 // Lumiverse calls this every time it resolves {{modes}} and tells us which
 // chat the prompt is for, so each chat gets its own modes even when several
 // are open at once. Without a chat id (some previews) the chat open in the
-// menu is used. The raw descriptions are returned macros and all: Lumiverse
-// expands any {{user}}, {{random}} etc. in the result for every generation.
-function resolveModesMacro(ctx: { chatId?: unknown } | undefined): string {
-  // With a direct placement the interceptor sends the modes; {{modes}} stays
-  // empty so a preset that still contains it doesn't send them twice.
-  if (config.placement !== 'macro') return '';
+// menu is used. The text is returned macros and all: Lumiverse expands any
+// {{user}}, {{random}} etc. in the result for every generation.
+async function resolveModesMacro(ctx: { chatId?: unknown } | undefined): Promise<string> {
   const chatId = typeof ctx?.chatId === 'string' && ctx.chatId ? ctx.chatId : currentChatId;
-  return buildModesRawText(chatId);
+  await loadChat(chatId);
+  return applyFraming(buildModesRawText(chatId), config.framing);
 }
 
-// ===== Direct placement (interceptor) =====
-// Uses LumiScript's interceptor pipeline (MIT, mindbound,
-// https://github.com/mindbound/lumiscript), vendored unchanged in
-// src/vendor/lumiscript: it splices injections into the fully assembled
-// prompt and reports each one in the Prompt Breakdown. Mode Toggles only
-// supplies the text (this chat's framing + active modes) and, in
-// src/placement.ts, where it goes. So where the modes land no longer depends
-// on where each preset puts {{modes}}.
-function buildInjectionTemplate(chatId: string): string {
-  const modesText = buildModesRawText(chatId);
-  if (!modesText) return '';
-  const framing = config.framing.trim();
-  if (!framing) return modesText;
-  // Replace our own placeholder before macro resolution, so the (now empty)
-  // {{modes}} macro is never asked for a value here.
-  if (framing.includes('{{modes}}')) return framing.split('{{modes}}').join(modesText);
-  return `${framing}\n${modesText}`;
+// ===== {{modes}} inside a chosen preset block =====
+// Uses Lumiverse's preset editing (spindle.presets, permission "presets"),
+// the same host feature LumiScript's api.presets wraps. For each preset the
+// user picked a block in, {{modes}} is kept at the end of that block, and put
+// back whenever the preset is saved or updated (PRESET_CHANGED).
+const presetWrites = new Map<string, Promise<void>>();
+
+function ensureModesInPreset(presetId: string): Promise<void> {
+  // One check per preset at a time; our own update fires PRESET_CHANGED again,
+  // and that second check finds {{modes}} already there.
+  const prev = presetWrites.get(presetId) ?? Promise.resolve();
+  const next = prev.catch(() => {}).then(async () => {
+    const assignment = config.presetBlocks[presetId];
+    if (!assignment) return;
+    let blocks: any[];
+    try {
+      blocks = await spindle.presets.blocks.list(presetId, currentUserId);
+    } catch (e) {
+      spindle.log.warn(`Mode Toggles: could not read preset "${assignment.presetName}": ${e}`);
+      return;
+    }
+    const block = findAssignedBlock(blocks, assignment);
+    if (!block) {
+      toast.warning(`Mode Toggles: the block "${assignment.blockName}" is no longer in preset "${assignment.presetName}". Pick it again in the Mode Toggles tab.`);
+      return;
+    }
+    if (block.id !== assignment.blockId) {
+      assignment.blockId = block.id;
+      await saveConfig();
+    }
+    if (hasModesTag(block.content)) return;
+    try {
+      await spindle.presets.blocks.update(presetId, block.id, { content: withModesTag(block.content) }, currentUserId);
+      spindle.log.info(`Mode Toggles: added {{modes}} to "${block.name}" in preset "${assignment.presetName}"`);
+    } catch (e) {
+      spindle.log.warn(`Mode Toggles: could not update preset "${assignment.presetName}": ${e}`);
+    }
+  }).finally(() => {
+    if (presetWrites.get(presetId) === next) presetWrites.delete(presetId);
+  });
+  presetWrites.set(presetId, next);
+  return next;
 }
 
-async function placeModes(messages: any[], context: { chatId?: string; isDryRun?: boolean }) {
-  if (!config.enabled || config.placement === 'macro') return messages;
-  const chatId = typeof context?.chatId === 'string' && context.chatId ? context.chatId : currentChatId;
-  const template = buildInjectionTemplate(chatId);
-  if (!template) return messages;
-
-  // Interceptors run after prompt assembly, so macros ({{user}}, {{char}},
-  // {{random}}…) are resolved here, the way the preset would have resolved them.
-  let content = template;
+async function removeModesFromPreset(presetId: string, assignment: BlockAssignment): Promise<void> {
   try {
-    const { text } = await spindle.macros.resolve(template, { chatId, commit: !context?.isDryRun });
-    content = text;
+    const blocks = await spindle.presets.blocks.list(presetId, currentUserId);
+    const block = findAssignedBlock(blocks, assignment);
+    if (!block) return;
+    const content = withoutAddedModesTag(block.content);
+    if (content !== block.content) {
+      await spindle.presets.blocks.update(presetId, block.id, { content }, currentUserId);
+    }
   } catch (e) {
-    spindle.log.warn(`Mode Toggles: macro resolution failed, sending modes unresolved: ${e}`);
+    spindle.log.warn(`Mode Toggles: could not update preset "${assignment.presetName}": ${e}`);
   }
+}
 
-  const entries = buildModesEntries(messages, config.placement, config.depth, content);
-  if (entries.context.length === 0 && entries.intercept.length === 0) return messages;
-
-  const { messages: result, breakdown } = applyLumiScriptInjections(
-    messages, entries.context, entries.intercept, () => 'Mode Toggles',
-  );
-  // Same return convention as LumiScript: the object form only when there is
-  // breakdown data to attach.
-  return breakdown.length > 0 ? { messages: result, breakdown } : result;
+async function listAllPresets(): Promise<Array<{ id: string; name: string }>> {
+  const out: Array<{ id: string; name: string }> = [];
+  const limit = 200;
+  for (let offset = 0; ; offset += limit) {
+    const page = await spindle.presets.list({ limit, offset, userId: currentUserId });
+    for (const p of page.data) out.push({ id: p.id, name: p.name });
+    if (page.data.length < limit || offset + limit >= page.total) break;
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 spindle.onFrontendMessage(async (payload: any, userId?: string) => {
@@ -619,6 +725,8 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
   // This protects against stale frontend chatIds after rapid chat switches.
   const chatId = await resolveActiveChatId(payload.chatId);
   if (chatId !== currentChatId) currentChatId = chatId;
+  // This chat's modes are read from the chat itself (once, then cached).
+  await loadChat(chatId);
 
   switch (payload.type) {
     case 'request_state': {
@@ -633,12 +741,11 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       if (isOn) {
         // OFF is instant and total — no lingering state, no ghost line.
         delete state[payload.modeName];
-        if (Object.keys(state).length === 0) delete config.chatStates[chatId];
       } else {
         state[payload.modeName] = { status: 'ON' };
       }
-      await saveConfig();
       sendStateToFrontend();
+      await saveChat(chatId);
       break;
     }
 
@@ -652,8 +759,6 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
     case 'update_settings':
       if (payload.loadCoreModes !== undefined) config.loadCoreModes = payload.loadCoreModes;
       if (payload.sortMode !== undefined) config.sortMode = payload.sortMode === 'flat' ? 'flat' : 'group';
-      if (payload.placement !== undefined) config.placement = normalizePlacement(payload.placement);
-      if (payload.depth !== undefined) config.depth = normalizeDepth(payload.depth);
       if (typeof payload.framing === 'string') config.framing = payload.framing;
       await saveConfig();
       sendStateToFrontend();
@@ -672,11 +777,12 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       if (isDefault) {
         toast.success(`Mode "${name}" restored to default`);
       } else {
-        // Custom mode is gone for good: drop its toggles and any emptied buckets.
-        for (const cid of Object.keys(config.chatStates)) {
-          delete config.chatStates[cid][name];
-          if (Object.keys(config.chatStates[cid]).length === 0) delete config.chatStates[cid];
-        }
+        // Custom mode is gone for good: drop its toggles in every chat.
+        await forEachChatWithModes((modes) => {
+          if (!modes[name]) return false;
+          delete modes[name];
+          return true;
+        });
         toast.success(`Mode "${name}" deleted`);
       }
       await saveConfig();
@@ -736,9 +842,6 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       if (replace) {
         // Carry renamed modes' toggles and preset entries over to the new name.
         for (const [from, to] of plan.renames) {
-          for (const states of Object.values(config.chatStates)) {
-            if (states[from]) { states[to] = states[from]; delete states[from]; }
-          }
           for (const preset of Object.values(config.presets)) {
             preset.modes = Array.from(new Set(preset.modes.map((n) => (n === from ? to : n))));
           }
@@ -748,11 +851,20 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         // Remove custom modes from the file's groups that the file no longer contains.
         for (const name of plan.removed) {
           delete config.modeOverrides[name];
-          for (const cid of Object.keys(config.chatStates)) {
-            delete config.chatStates[cid][name];
-            if (Object.keys(config.chatStates[cid]).length === 0) delete config.chatStates[cid];
-          }
           removedCount++;
+        }
+        // Apply both to every chat's toggles.
+        if (plan.renames.length > 0 || plan.removed.length > 0) {
+          await forEachChatWithModes((modes) => {
+            let changed = false;
+            for (const [from, to] of plan.renames) {
+              if (modes[from]) { modes[to] = modes[from]; delete modes[from]; changed = true; }
+            }
+            for (const name of plan.removed) {
+              if (modes[name]) { delete modes[name]; changed = true; }
+            }
+            return changed;
+          });
         }
         // Store the file's modes in the file's order, placed where that set
         // used to sit, so {{modes}} follows the file. Other groups and edited
@@ -814,8 +926,6 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         enabled: config.enabled,
         loadCoreModes: config.loadCoreModes,
         sortMode: config.sortMode,
-        placement: config.placement,
-        depth: config.depth,
         framing: config.framing,
         modeOverrides: config.modeOverrides,
         presets: config.presets,
@@ -834,8 +944,6 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       if (typeof incoming.enabled === 'boolean') config.enabled = incoming.enabled;
       if (typeof incoming.loadCoreModes === 'boolean') config.loadCoreModes = incoming.loadCoreModes;
       if (incoming.sortMode === 'group' || incoming.sortMode === 'flat') config.sortMode = incoming.sortMode;
-      if (incoming.placement !== undefined) config.placement = normalizePlacement(incoming.placement);
-      if (incoming.depth !== undefined) config.depth = normalizeDepth(incoming.depth);
       if (typeof incoming.framing === 'string') config.framing = incoming.framing;
       // Validate shapes: a malformed entry would otherwise print "undefined"
       // into {{modes}} or crash Tidy.
@@ -875,9 +983,11 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         if (!defaultNames.has(name)) toRemove.add(name);
         delete config.modeOverrides[name];
       }
-      for (const chatId of Object.keys(config.chatStates)) {
-        for (const name of toRemove) delete config.chatStates[chatId][name];
-      }
+      await forEachChatWithModes((modes) => {
+        let changed = false;
+        for (const name of toRemove) if (modes[name]) { delete modes[name]; changed = true; }
+        return changed;
+      });
       await saveConfig();
       sendStateToFrontend();
       toast.success('All custom modes removed');
@@ -885,13 +995,20 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
     }
 
     case 'reset_defaults': {
-      // Preserve user's presets — they represent meaningful work.
+      // Preserve user's presets — they represent meaningful work. The preset
+      // blocks are kept too: they match {{modes}} already written into presets.
+      await forEachChatWithModes((modes) => {
+        const names = Object.keys(modes);
+        for (const n of names) delete modes[n];
+        return names.length > 0;
+      });
       const preservedPresets = config.presets;
+      const preservedBlocks = config.presetBlocks;
       config = {
         enabled: true, loadCoreModes: true,
         sortMode: 'group',
         modeOverrides: {}, chatStates: {}, presets: preservedPresets,
-        placement: 'macro', depth: 2, framing: '',
+        framing: '', presetBlocks: preservedBlocks,
       };
       lastUndo = null;
       await saveConfig();
@@ -907,10 +1024,9 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       const onNames = Object.keys(st).filter((n) => st[n].status === 'ON');
       if (onNames.length > 0) {
         for (const n of onNames) delete st[n];
-        if (Object.keys(st).length === 0) delete config.chatStates[chatId];
         lastUndo = { chatId, label: 'Disable All', states: snapshot };
-        await saveConfig();
         sendStateToFrontend();
+        await saveChat(chatId);
         toast.success(`Disabled ${onNames.length} mode(s) — undo available`);
       } else {
         toast.info('No active modes to disable');
@@ -926,8 +1042,8 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
       const pick = inactive[Math.floor(Math.random() * inactive.length)];
       const st = getChatState(chatId);
       st[pick.name] = { status: 'ON' };
-      await saveConfig();
       sendStateToFrontend();
+      await saveChat(chatId);
       toast.success(`Randomly activated: ${pick.name}`);
       break;
     }
@@ -980,8 +1096,8 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
         if (!wasOn) activated++;
       }
       lastUndo = { chatId, label: `Load "${name}"`, states: undoSnapshot };
-      await saveConfig();
       sendStateToFrontend();
+      await saveChat(chatId);
       const verb = mergeMode === 'replace' ? 'Loaded' : 'Merged';
       toast.success(`${verb} "${name}" — ${activated} mode${activated === 1 ? '' : 's'} activated · undo available`);
       if (missing > 0) toast.warning(`${missing} mode(s) in this preset no longer exist — run Tidy to clean up`);
@@ -1019,29 +1135,95 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
     case 'undo_last': {
       if (!lastUndo || lastUndo.chatId !== chatId) { toast.info('Nothing to undo'); return; }
       const label = lastUndo.label;
-      config.chatStates[chatId] = lastUndo.states;
+      chatStore.set(chatId, lastUndo.states);
       lastUndo = null;
-      await saveConfig();
       sendStateToFrontend();
+      await saveChat(chatId);
       toast.success(`Undid: ${label}`);
       break;
     }
 
     case 'request_tidy_report': {
-      spindle.sendToFrontend({ type: 'tidy_report', report: computeTidyReport() });
+      spindle.sendToFrontend({ type: 'tidy_report', report: await computeTidyReport() });
       break;
     }
 
     case 'apply_tidy': {
-      const before = computeTidyReport();
+      const before = await computeTidyReport();
       const total = before.orphanToggles + before.emptyPresets + before.deadPresetRefs + before.emptyChatBuckets;
       if (total === 0) { toast.info('Already tidy — nothing to clean'); return; }
-      applyTidy();
+      await applyTidy();
       // A tidy pass can invalidate the undo snapshot (it may reference removed modes).
       lastUndo = null;
       await saveConfig();
       sendStateToFrontend();
       toast.success(`Tidied: removed ${before.orphanToggles} orphan toggle(s), ${before.emptyPresets} empty preset(s), ${before.deadPresetRefs} dead reference(s)`);
+      break;
+    }
+
+    // ===== {{modes}} inside a preset block =====
+    case 'list_presets': {
+      try {
+        spindle.sendToFrontend({ type: 'presets_list', presets: await listAllPresets() });
+      } catch (e) {
+        spindle.sendToFrontend({ type: 'presets_list', presets: [], error: String(e) });
+      }
+      break;
+    }
+
+    case 'list_blocks': {
+      const presetId = String(payload.presetId || '');
+      if (!presetId) return;
+      try {
+        const blocks = pickableBlocks(await spindle.presets.blocks.list(presetId, currentUserId));
+        spindle.sendToFrontend({
+          type: 'blocks_list',
+          presetId,
+          blocks: blocks.map((b) => ({
+            id: b.id, name: b.name, enabled: b.enabled !== false, isCategory: b.marker === 'category',
+          })),
+          selectedId: config.presetBlocks[presetId]?.blockId ?? null,
+        });
+      } catch (e) {
+        spindle.sendToFrontend({ type: 'blocks_list', presetId, blocks: [], selectedId: null, error: String(e) });
+      }
+      break;
+    }
+
+    case 'set_preset_block': {
+      const presetId = String(payload.presetId || '');
+      const blockId = String(payload.blockId || '');
+      if (!presetId || !blockId) return;
+      try {
+        const blocks = pickableBlocks(await spindle.presets.blocks.list(presetId, currentUserId));
+        const block = blocks.find((b) => b.id === blockId);
+        if (!block) { toast.error('That block can no longer be found in the preset'); return; }
+        const previous = config.presetBlocks[presetId];
+        // Record the new choice first, so the "preset changed" signal from the
+        // removal below checks the new block, not the old one.
+        config.presetBlocks[presetId] = {
+          blockId, blockName: block.name, presetName: String(payload.presetName || previous?.presetName || presetId),
+        };
+        await saveConfig();
+        if (previous && previous.blockId !== blockId) await removeModesFromPreset(presetId, previous);
+        await ensureModesInPreset(presetId);
+        sendStateToFrontend();
+        toast.success(`{{modes}} is now kept at the end of "${block.name}"`);
+      } catch (e) {
+        toast.error(`Could not read that preset: ${e}`);
+      }
+      break;
+    }
+
+    case 'clear_preset_block': {
+      const presetId = String(payload.presetId || '');
+      const assignment = config.presetBlocks[presetId];
+      if (!assignment) return;
+      delete config.presetBlocks[presetId];
+      await saveConfig();
+      await removeModesFromPreset(presetId, assignment);
+      sendStateToFrontend();
+      toast.success(`Removed {{modes}} from "${assignment.blockName}"`);
       break;
     }
   }
@@ -1055,7 +1237,23 @@ spindle.on('CHAT_CHANGED', async (data) => {
   const resolved = await resolveActiveChatId(hint);
   if (resolved === currentChatId) return;
   currentChatId = resolved;
+  await loadChat(resolved);
   sendStateToFrontend();
+});
+
+// A deleted chat takes its modes with it (they live in the chat); just drop
+// the cached copy.
+spindle.on('CHAT_DELETED', (data: any) => {
+  const id = data?.chatId ?? data?.id ?? data?.chat?.id;
+  if (typeof id === 'string') chatStore.forget(id);
+});
+
+// A preset was saved or updated (including updates installed from LumiHub):
+// put {{modes}} back into its chosen block if the update removed it.
+spindle.on('PRESET_CHANGED', (data: any, userId?: string) => {
+  if (userId && !currentUserId) currentUserId = userId;
+  const id = data?.id ?? data?.preset?.id;
+  if (typeof id === 'string' && config.presetBlocks[id]) void ensureModesInPreset(id);
 });
 
 // Note: there is no per-turn state to refresh anymore (ON is the only state and
@@ -1083,20 +1281,22 @@ spindle.permissions.onDenied(({ permission, operation }) => {
     name: 'modes',
     category: 'extension:mode_toggles',
     description:
-      "Active Mode Toggles modes for the current chat, blank-line separated. Place {{modes}} anywhere in your preset.",
+      "Active Mode Toggles modes for the current chat, blank-line separated, inside your Framing if set. Place {{modes}} anywhere in your preset, or pick a block for it in the Mode Toggles tab.",
     returnType: 'string',
     volatile: true,
-    // The runtime accepts a function handler; the published types still say string.
+    // The runtime accepts a function handler (sync or async); the published
+    // types still say string.
     handler: resolveModesMacro as unknown as string,
   });
 
-  // Direct placement. Runs late (high priority number) so 'top' really is
-  // the top and depths are counted on the final message list.
-  try {
-    spindle.registerInterceptor(placeModes as any, 900);
-  } catch (e) {
-    spindle.log.warn(`Mode Toggles: interceptor unavailable (grant the "interceptor" permission): ${e}`);
-  }
-
+  await loadChat(currentChatId);
   sendStateToFrontend();
+
+  // Presets updated while Mode Toggles wasn't running: put {{modes}} back.
+  for (const presetId of Object.keys(config.presetBlocks)) await ensureModesInPreset(presetId);
+
+  // Move old per-chat entries from config.json into their chats (and drop the
+  // ones whose chat was deleted). Entries that can't be reached now are moved
+  // the next time their chat is opened.
+  for (const chatId of Object.keys(config.chatStates)) await loadChat(chatId);
 })();
