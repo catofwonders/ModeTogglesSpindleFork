@@ -41,9 +41,11 @@ describe('pickableBlocks', () => {
     { id: 'c', name: 'Header', content: 'text', marker: 'category' },
     { id: 'd', name: 'Sealed', content: '', marker: null, sealed: true },
     { id: 'e', name: 'Old', content: '' },
+    { id: 'f', name: "🏰 The Cartomancer's Contract", content: '<order_of_authority>…', marker: 'main_prompt' },
+    { id: 'g', name: 'World Info (before)', content: '', marker: 'world_info_before' },
   ];
-  test('keeps regular blocks and category headers, drops markers and sealed blocks', () => {
-    expect(pickableBlocks(blocks).map((b) => b.id)).toEqual(['a', 'c', 'e']);
+  test('keeps regular blocks, category headers and text markers like the Main Prompt; drops placeholders and sealed blocks', () => {
+    expect(pickableBlocks(blocks).map((b) => b.id)).toEqual(['a', 'c', 'e', 'f']);
   });
 });
 
