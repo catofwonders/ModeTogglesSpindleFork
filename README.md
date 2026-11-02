@@ -70,11 +70,11 @@ Instead of a separate block that only holds `{{modes}}`, you can have the modes 
 2. Click **Keep {{modes}} in this block**. Mode Toggles adds `{{modes}}` to the end of that block.
 3. Turn off any other block in that preset that also has `{{modes}}`, so the modes aren't sent twice.
 
-Each preset has its own choice, so this works with any preset whatever its blocks are called. Only blocks whose text is sent can be picked: structural markers such as Chat History, and sealed LumiHub blocks, are not offered.
+Each preset has its own choice, so this works with any preset whatever its blocks are called. Only blocks that can safely hold `{{modes}}` are offered: regular blocks, category headers, and text-bearing markers such as the Main Prompt. Not offered: placeholders such as Chat History or World Info, sealed LumiHub blocks, and stashed blocks (shared between presets, so an edit would reach every preset that uses them). Next to each block the list notes anything that changes where or whether it is sent: off, inside or after the chat history, added onto a chat message, only for some kinds of generation, only for some characters.
 
 When the preset is saved or updated (including updates installed from LumiHub) and `{{modes}}` is no longer in the block, Mode Toggles puts it back. If the update gives the block a new id, it is found again by its name. **Remove** stops this and takes out the `{{modes}}` Mode Toggles added.
 
-This edits the preset itself, through Lumiverse's preset API, and needs the `presets` permission.
+This edits the preset itself and needs the `presets` permission. Mode Toggles reads the preset as stored and saves its block list back with only that block's text changed, so every other block and every setting stays exactly as it was (it doesn't use Lumiverse's single-block save, which re-writes every block and drops fields such as LumiHub's sealed markings). The save only goes through if nobody changed the preset in between; otherwise it reads it again and retries.
 
 ## Using the quick toggle menu
 
