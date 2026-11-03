@@ -724,6 +724,14 @@ async function readPresetBlocks(presetId: string): Promise<BlockLike[] | null> {
   return preset ? (preset.prompt_order as unknown as BlockLike[]) : null;
 }
 
+// The preset was deleted: drop its entry from the list, quietly.
+async function forgetDeletedPreset(presetId: string): Promise<void> {
+  if (!config.presetBlocks[presetId]) return;
+  delete config.presetBlocks[presetId];
+  await saveConfig();
+  sendStateToFrontend();
+}
+
 /**
  * Make sure the picked block of this preset holds {{modes}}. Resolves true
  * when it does afterwards. Failures are shown to the user, never silent.
@@ -739,7 +747,8 @@ function ensureModesInPreset(presetId: string): Promise<boolean> {
     try {
       const blocks = await readPresetBlocks(presetId);
       if (!blocks) {
-        toast.warning(`Mode Toggles: preset "${assignment.presetName}" no longer exists.`);
+        // Deleted while Mode Toggles wasn't running.
+        await forgetDeletedPreset(presetId);
         return false;
       }
       const block = findAssignedBlock(blocks, assignment);
@@ -757,7 +766,11 @@ function ensureModesInPreset(presetId: string): Promise<boolean> {
         spindle.log.info(`Mode Toggles: {{modes}} is in ${where}`);
         return true;
       }
-      toast.warning(`Mode Toggles: couldn't add {{modes}} to ${where} (${result === 'gone' ? 'preset deleted' : 'block removed'}).`);
+      if (result === 'gone') {
+        await forgetDeletedPreset(presetId);
+        return false;
+      }
+      toast.warning(`Mode Toggles: couldn't add {{modes}} to ${where} (block removed).`);
       return false;
     } catch (e) {
       if (isMissingUserError(e)) {
@@ -1344,6 +1357,13 @@ spindle.on('PRESET_CHANGED', (data: any, userId?: string) => {
   noteUser(userId);
   const id = data?.id ?? data?.preset?.id;
   if (typeof id === 'string' && config.presetBlocks[id]) void ensureModesInPreset(id);
+});
+
+// A preset was deleted: drop it from the list of picked blocks.
+spindle.on('PRESET_DELETED', (data: any, userId?: string) => {
+  noteUser(userId);
+  const id = data?.id;
+  if (typeof id === 'string') void forgetDeletedPreset(id);
 });
 
 // Note: there is no per-turn state to refresh anymore (ON is the only state and
