@@ -70,8 +70,15 @@ describe('which blocks can be picked, for every marker Lumiverse has', () => {
   test('an unknown marker is not offered (only markers known to send their text are)', () => {
     expect(pickableBlocks([{ id: 'a', name: 'a', content: '', marker: 'some_future_marker' }])).toEqual([]);
   });
-  test('sealed LumiHub blocks are not offered', () => {
-    expect(pickableBlocks([{ id: 'a', name: 'a', content: '', sealed: true }])).toEqual([]);
+  test('sealed LumiHub blocks are offered (their text is stored and sent locally)', () => {
+    expect(pickableBlocks([{ id: 'a', name: 'a', content: 'text', sealed: true }]).length).toBe(1);
+  });
+  test('editing a sealed block keeps its sealed fields', async () => {
+    const f = fakePresets([fullBlock('s', { sealed: true })]);
+    expect(await editBlockContent(f.io, 'p', 's', withModesTag)).toBe('ok');
+    const b = f.state.order[0];
+    expect([b.sealed, b.sealedKey, b.sealedSource, b.sealedOriginPresetId, b.sealedOriginVersion, b.sealedSha256])
+      .toEqual([true, 'k', 'lumihub', 'o', '1', 'abc']);
   });
   test('stashed blocks (shared across presets) are not offered', () => {
     expect(pickableBlocks([{ id: 'a', name: 'a', content: '', stashId: 's1' }])).toEqual([]);

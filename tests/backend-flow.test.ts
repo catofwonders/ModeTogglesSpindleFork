@@ -207,10 +207,10 @@ describe('keeping {{modes}} in a preset block', () => {
     expect(p.blocks[0].content).toBe('Be a narrator, v2.\n\n{{modes}}');
     expect(config().presetBlocks.p1.blockId).toBe('b-main-v2');
   });
-  test('in a preset with sealed and shared blocks, only safe blocks are offered', async () => {
+  test('in a preset with sealed and shared blocks, sealed ones are offered and shared ones are not', async () => {
     await send({ type: 'list_blocks', presetId: 'p-hub' });
     const list = [...sent].reverse().find((p) => p.type === 'blocks_list');
-    expect(list.blocks.map((b: any) => b.id)).toEqual(['s-main']);
+    expect(list.blocks.map((b: any) => b.id)).toEqual(['s-main', 's-seal']);
   });
   test('editing it keeps the sealed and shared blocks exactly as stored', async () => {
     const before = JSON.parse(JSON.stringify(presets.get('p-hub')!.blocks));
