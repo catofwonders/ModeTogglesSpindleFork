@@ -311,4 +311,20 @@ describe('deleted presets', () => {
     expect(config().presetBlocks.p1).toBeUndefined();
     expect(lastState().presetBlocks.find((a: any) => a.presetId === 'p1')).toBeUndefined();
   });
+  test('the drawer gets a fresh preset list without the deleted preset', async () => {
+    await sleep(400);
+    const list = [...sent].reverse().find((p) => p.type === 'presets_list');
+    expect(list.refresh).toBe(true);
+    expect(list.presets.map((p: any) => p.id)).not.toContain('p1');
+  });
+  test('Remove also works for a preset that no longer exists', async () => {
+    presets.set('p9', { id: 'p9', name: 'Temp', revision: 1, blocks: [
+      { id: 'm', name: 'Main', content: 'x', enabled: true, marker: null },
+    ] });
+    await send({ type: 'set_preset_block', presetId: 'p9', blockId: 'm', presetName: 'Temp' });
+    presets.delete('p9'); // deleted without the signal reaching Mode Toggles
+    await send({ type: 'clear_preset_block', presetId: 'p9' });
+    expect(config().presetBlocks.p9).toBeUndefined();
+    expect(lastState().presetBlocks.find((a: any) => a.presetId === 'p9')).toBeUndefined();
+  });
 });
