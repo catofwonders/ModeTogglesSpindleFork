@@ -106,3 +106,13 @@ test('later checks use the known user', async () => {
   await sleep(50);
   expect(preset.blocks[0].content).toBe('Rules, updated.\n\n{{modes}}');
 });
+
+test('a preset deleted while Mode Toggles was off is dropped quietly once checked', async () => {
+  const cfg = JSON.parse(files.get('config.json')!);
+  expect(cfg.presetBlocks.p1).toBeDefined();
+  preset.id = 'gone-now'; // p1 no longer exists
+  listeners.get('PRESET_CHANGED')?.({ id: 'p1' }, 'u1');
+  await sleep(50);
+  expect(JSON.parse(files.get('config.json')!).presetBlocks.p1).toBeUndefined();
+  expect(toasts.filter((t) => /no longer exists|couldn't/i.test(t))).toEqual([]);
+});

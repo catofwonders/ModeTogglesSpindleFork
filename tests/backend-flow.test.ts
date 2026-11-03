@@ -300,3 +300,15 @@ describe('without the chat_mutation permission', () => {
     }
   });
 });
+
+describe('deleted presets', () => {
+  test('a preset deleted in Lumiverse is dropped from the list by itself', async () => {
+    await send({ type: 'set_preset_block', presetId: 'p1', blockId: 'b-main-v2', presetName: 'Any Preset' });
+    expect(config().presetBlocks.p1).toBeDefined();
+    presets.delete('p1');
+    emit('PRESET_DELETED', { id: 'p1' });
+    await settle();
+    expect(config().presetBlocks.p1).toBeUndefined();
+    expect(lastState().presetBlocks.find((a: any) => a.presetId === 'p1')).toBeUndefined();
+  });
+});
