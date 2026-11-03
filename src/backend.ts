@@ -724,6 +724,21 @@ async function readPresetBlocks(presetId: string): Promise<BlockLike[] | null> {
   return preset ? (preset.prompt_order as unknown as BlockLike[]) : null;
 }
 
+// Presets were added, renamed or deleted: send the drawer a fresh list (it
+// ignores this until the user has opened the preset picker once).
+let presetListTimer: ReturnType<typeof setTimeout> | null = null;
+function refreshPresetListSoon(): void {
+  if (presetListTimer) clearTimeout(presetListTimer);
+  presetListTimer = setTimeout(async () => {
+    presetListTimer = null;
+    try {
+      spindle.sendToFrontend({ type: 'presets_list', presets: await listAllPresets(), refresh: true });
+    } catch {
+      // No user known yet, or no permission: the drawer keeps its list.
+    }
+  }, 300);
+}
+
 // The preset was deleted: drop its entry from the list, quietly.
 async function forgetDeletedPreset(presetId: string): Promise<void> {
   if (!config.presetBlocks[presetId]) return;
@@ -1357,6 +1372,7 @@ spindle.on('PRESET_CHANGED', (data: any, userId?: string) => {
   noteUser(userId);
   const id = data?.id ?? data?.preset?.id;
   if (typeof id === 'string' && config.presetBlocks[id]) void ensureModesInPreset(id);
+  refreshPresetListSoon();
 });
 
 // A preset was deleted: drop it from the list of picked blocks.
@@ -1364,6 +1380,7 @@ spindle.on('PRESET_DELETED', (data: any, userId?: string) => {
   noteUser(userId);
   const id = data?.id;
   if (typeof id === 'string') void forgetDeletedPreset(id);
+  refreshPresetListSoon();
 });
 
 // Note: there is no per-turn state to refresh anymore (ON is the only state and

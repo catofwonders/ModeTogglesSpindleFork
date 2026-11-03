@@ -147,7 +147,11 @@ export function setup(ctx: SpindleFrontendContext) {
     title: 'Mode Toggles',
     iconSvg: MICROCHIP_SVG,
   });
-  tab.onActivate(() => send({ type: 'request_state' }));
+  tab.onActivate(() => {
+    send({ type: 'request_state' });
+    // Presets may have been added or deleted since the list was loaded.
+    if (presetList !== null) send({ type: 'list_presets' });
+  });
   renderSettingsTab();
 
   // ===== Input Bar Action: Quick Toggle Menu =====
@@ -184,7 +188,15 @@ export function setup(ctx: SpindleFrontendContext) {
     } else if (payload.type === 'export_config_data') {
       downloadText(payload.json, 'mode-toggles-config.json', 'application/json');
     } else if (payload.type === 'presets_list') {
+      // A refresh only updates a list the user has already opened.
+      if (payload.refresh && presetList === null) return;
       presetList = Array.isArray(payload.presets) ? payload.presets : [];
+      if (pickerPresetId && !presetList!.some((p) => p.id === pickerPresetId)) {
+        pickerPresetId = '';
+        pickerBlocks = null;
+        pickerBlockId = '';
+        pickerError = '';
+      }
       presetListError = payload.error ? String(payload.error) : '';
       renderSettingsTab();
     } else if (payload.type === 'blocks_list') {
