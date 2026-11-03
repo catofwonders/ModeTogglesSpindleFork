@@ -61,15 +61,17 @@ const TEXT_MARKERS = new Set(['category', 'main_prompt', 'enhance_definitions', 
  * regular blocks, the text-bearing markers above, and category headers. Not:
  *  - structural markers (Chat History, World Info, …): placeholders Lumiverse
  *    fills itself;
- *  - sealed LumiHub blocks: their text is supplied by LumiHub;
  *  - stashed blocks (stashId): shared across presets, so Lumiverse copies any
  *    edit into every preset that uses them (syncStashedBlocksAcrossPresets).
  */
+// Sealed LumiHub blocks ARE offered: on install Lumiverse stores their real
+// text locally (lumihub/installer.ts), sends it like any other block, and lets
+// the user edit it; sealing only strips the text from exports and shares. The
+// lossless save below keeps their sealed fields.
 export function pickableBlocks<T extends BlockLike>(blocks: ReadonlyArray<T>): T[] {
   return blocks.filter((b) =>
     !!b && typeof b.id === 'string'
     && (b.marker === null || b.marker === undefined || TEXT_MARKERS.has(b.marker))
-    && b.sealed !== true
     && !(typeof b.stashId === 'string' && b.stashId.trim()));
 }
 
