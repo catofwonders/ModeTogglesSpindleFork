@@ -52,7 +52,7 @@ Mode Toggles does not inject anything on its own. Add the macro to your preset w
 
 How the macro behaves:
 
-- It outputs **only the descriptions** of the modes that are ON in the current chat. Each group is one `<setting_rules group="Group Name">` section (groups A–Z), and each rule inside it is one `- ` list item; a family's master and its ON levels are one item. Mode names are not included.
+- It outputs **only the descriptions** of the modes that are ON in the current chat, separated by blank lines. Mode names and groups are not included.
 - It outputs **nothing** when no modes are ON, so any framing you write around it will still appear. Keep the framing short or neutral.
 - It updates automatically when you toggle modes or switch chats.
 

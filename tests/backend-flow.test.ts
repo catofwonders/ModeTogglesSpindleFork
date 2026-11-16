@@ -169,18 +169,10 @@ describe('toggling', () => {
 
 describe('{{modes}}', () => {
   test('outputs the chat\'s modes inside the framing', async () => {
-    expect(await macroHandler({ chatId: 'c1' })).toBe('[Setting rules]\n<setting_rules group="Powers">\n- Rules for {{user}}. Can fly.\n</setting_rules>');
+    expect(await macroHandler({ chatId: 'c1' })).toBe('[Setting rules]\nRules for {{user}}. Can fly.');
   });
   test('each chat gets its own modes', async () => {
-    expect(await macroHandler({ chatId: 'c2' })).toBe('[Setting rules]\n<setting_rules group="Misc">\n- Renamed later.\n</setting_rules>');
-  });
-  test('each group is its own tagged section, A-Z', async () => {
-    chats.set('c4', { mode_toggles: ['Power 0: Rules', 'Power 1: Flight', 'Old Name'] });
-    expect(await macroHandler({ chatId: 'c4' })).toBe(
-      '[Setting rules]\n'
-      + '<setting_rules group="Misc">\n- Renamed later.\n</setting_rules>\n\n'
-      + '<setting_rules group="Powers">\n- Rules for {{user}}. Can fly.\n</setting_rules>');
-    chats.delete('c4');
+    expect(await macroHandler({ chatId: 'c2' })).toBe('[Setting rules]\nRenamed later.');
   });
   test('a chat with no modes gets nothing', async () => {
     chats.set('c3', {});

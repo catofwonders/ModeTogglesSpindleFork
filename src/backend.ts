@@ -575,13 +575,13 @@ function sendStateToFrontend(): void {
 // a block the user picked per preset. Outputs the mode descriptions,
 // blank-line separated, inside the Framing text when one is set.
 
-// Text sent to the model. No mode names: only descriptions, so it reads as
-// plain rules continuing the user's framing. Structure is carried by layout:
-//  - each group (A-Z, like the menu) is one <setting_rules group="..."> section;
-//  - inside it, each rule is one "- " list item;
-//  - a family's master and active levels form ONE item, so the model reads
+// Text sent to the model. No headings or names: only descriptions, so it reads
+// as plain rules continuing the user's framing. Structure is carried by layout:
+//  - a family's master and active levels form ONE paragraph, so the model reads
 //    "what this covers" and "what it is here" as a single rule;
-//  - modes without a family are one item each.
+//  - modes without a family are one paragraph each;
+//  - groups (A-Z, like the menu) are separated by a "~ ~ ~" break line (not "* * *",
+//    which markdown viewers turn into an invisible rule).
 function buildModesRawText(chatId: string): string {
   // Master switch: when Mode Toggles is disabled the macro emits nothing.
   if (!config.enabled) return '';
@@ -606,11 +606,9 @@ function buildModesRawText(chatId: string): string {
       else paragraphs.push(text);
       currentFamily = fam;
     }
-    const label = g.replace(/"/g, "'");
-    const items = paragraphs.map((p) => `- ${p}`).join('\n');
-    sections.push(`<setting_rules group="${label}">\n${items}\n</setting_rules>`);
+    sections.push(paragraphs.join('\n\n'));
   }
-  return sections.join('\n\n');
+  return sections.join('\n\n~ ~ ~\n\n');
 }
 
 // Output order: families stay together, in the order each family first

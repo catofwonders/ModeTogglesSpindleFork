@@ -93,7 +93,7 @@ test('startup without a known user: no error notice, nothing changed yet', () =>
 });
 
 test('a {{modes}} request names the user: the modes come out, and the preset is fixed', async () => {
-  expect(await macroHandler({ chatId: 'c1', env: { extra: { userId: 'u1' } } })).toBe('<setting_rules group="G">\n- Rule A text.\n</setting_rules>');
+  expect(await macroHandler({ chatId: 'c1', env: { extra: { userId: 'u1' } } })).toBe('Rule A text.');
   await sleep(50);
   expect(preset.blocks[0].content).toBe('Rules.\n\n{{modes}}');
   expect(toasts.filter((t) => /couldn't|could not|error/i.test(t))).toEqual([]);
