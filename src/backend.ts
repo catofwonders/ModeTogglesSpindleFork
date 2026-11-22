@@ -1346,16 +1346,43 @@ spindle.onFrontendMessage(async (payload: any, userId?: string) => {
 });
 
 // ===== Events =====
-spindle.on('CHAT_CHANGED', async (data, userId) => {
+// Moves to the chat Lumiverse says is open and, if it's a different chat,
+// sends its modes to the drawer, popover and badge.
+async function followActiveChat(hint: string | undefined, userId?: string): Promise<void> {
   noteUser(userId);
-  // Lumiverse 1.0 payload shape is { chat: { id }, changedFields? }.
-  // Keep a defensive fallback to the older flat { chatId } for pre-1.0 hosts.
-  const hint = data?.chat?.id ?? (data as any)?.chatId;
   const resolved = await resolveActiveChatId(hint);
   if (resolved === currentChatId) return;
   currentChatId = resolved;
   await loadChat(resolved);
   sendStateToFrontend();
+}
+
+// The user opened another chat. Lumiverse also replays this when Mode Toggles
+// starts while a chat is already open. chatId is null on the home screen:
+// keep the last chat's state, there is nothing else to show.
+spindle.on('CHAT_SWITCHED', async (data: any, userId?: string) => {
+  if (!data?.chatId) return;
+  await followActiveChat(data.chatId, userId);
+});
+
+// Older Lumiverse versions have no CHAT_SWITCHED; the switch shows up as the
+// activeChatId setting changing. On newer ones both arrive, and the second
+// finds the chat already loaded and does nothing.
+spindle.on('SETTINGS_UPDATED', async (data: any, userId?: string) => {
+  const switched = data?.key === 'activeChatId' || (Array.isArray(data?.keys) && data.keys.includes('activeChatId'));
+  if (!switched) return;
+  const hint = data?.key === 'activeChatId' && typeof data.value === 'string' ? data.value : undefined;
+  if (data?.key === 'activeChatId' && !hint) return; // home screen
+  await followActiveChat(hint, userId);
+});
+
+// A chat's data changed (an edit, a metadata update). Not a switch, but it can
+// be the first sign of the open chat on some hosts, so it's still followed.
+spindle.on('CHAT_CHANGED', async (data, userId) => {
+  // Lumiverse 1.0 payload shape is { chat: { id }, changedFields? }.
+  // Keep a defensive fallback to the older flat { chatId } for pre-1.0 hosts.
+  const hint = data?.chat?.id ?? (data as any)?.chatId;
+  await followActiveChat(hint, userId);
 });
 
 // A deleted chat takes its modes with it (they live in the chat); just drop

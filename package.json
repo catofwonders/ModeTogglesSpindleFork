@@ -1,7 +1,7 @@
 {
   "name": "mode-toggles-spindle",
-  "version": "1.2.0",
-  "description": "Toggle non-diegetic modifier modes injected into LLM prompts \u2014 Spindle extension for Lumiverse",
+  "version": "1.2.1",
+  "description": "Toggle non-diegetic modifier modes injected into LLM prompts — Spindle extension for Lumiverse",
   "author": "catofwonders",
   "license": "MIT",
   "type": "module",
@@ -10,10 +10,11 @@
     "build:backend": "bun build src/backend.ts --outfile dist/backend.js --target bun",
     "build:frontend": "bun build src/frontend.ts --outfile dist/frontend.js --target browser",
     "typecheck": "tsc --noEmit",
-    "test": "bun test tests/chat-store.test.ts tests/preset-blocks.test.ts tests/preset-stress.test.ts && bun test tests/backend-flow.test.ts && bun test tests/operator-scope.test.ts"
+    "test": "bun test tests/chat-store.test.ts tests/preset-blocks.test.ts tests/preset-stress.test.ts && bun test tests/backend-flow.test.ts && bun test tests/operator-scope.test.ts && bun test tests/frontend-lifecycle.test.ts"
   },
   "devDependencies": {
-    "lumiverse-spindle-types": "^0.6.13",
+    "@happy-dom/global-registrator": "^21.0.4",
+    "lumiverse-spindle-types": "0.6.81",
     "typescript": "^5.9.3"
   }
 }
