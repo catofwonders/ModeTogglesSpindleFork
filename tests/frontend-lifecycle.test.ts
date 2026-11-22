@@ -308,3 +308,45 @@ describe('keyboard and screen readers', () => {
     teardown();
   });
 });
+
+describe('dialogs opened from the popover', () => {
+  test('clicking Presets again while it is open does not stack another one', () => {
+    const host = createHost({ modal: true });
+    const teardown = setup(host.ctx);
+    host.fromBackend(stateFor('c1', []));
+    host.clickAction();
+    const presets = () => [...document.querySelectorAll('.mt-action')].find((b) => b.textContent?.includes('Presets')) as HTMLElement;
+    presets().click();
+    presets().click();
+    presets().click();
+    expect(host.modals.filter((m) => !m.dismissed).length).toBe(1);
+    expect(document.querySelector('.mt-overlay')).toBeNull();
+    // Closing it lets it open again.
+    host.modals[0].dismiss();
+    presets().click();
+    expect(host.modals.filter((m) => !m.dismissed).length).toBe(1);
+    teardown();
+  });
+
+  test('the popover sits below Lumiverse\'s modals (10003) and above its drawer (9992)', () => {
+    const host = createHost();
+    const teardown = setup(host.ctx);
+    const css = [...document.head.querySelectorAll('style')].map((s) => s.textContent).join('\n');
+    const z = (selector: string) => Number(new RegExp(`\\${selector} \\{[^}]*z-index: (\\d+)`).exec(css)?.[1]);
+    expect(z('.mt-popover')).toBeGreaterThan(9992);
+    expect(z('.mt-popover')).toBeLessThan(10003);
+    expect(z('.mt-overlay')).toBe(10003);
+    teardown();
+  });
+
+  test('each mode row says which list and mode it is, so it can be kept in place after a toggle', () => {
+    const host = createHost();
+    const teardown = setup(host.ctx);
+    host.fromBackend(stateFor('c1', ['Tone: Grim']));
+    host.clickAction();
+    const rows = [...document.querySelectorAll<HTMLElement>('.mt-mode')].filter((r) => r.dataset.mode === 'Tone: Grim');
+    // Once in "On in this chat" and once in its group.
+    expect(rows.map((r) => r.dataset.section).sort()).toEqual(['Tone', '__enabled__']);
+    teardown();
+  });
+});

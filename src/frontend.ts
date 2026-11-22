@@ -176,8 +176,10 @@ export function setup(ctx: SpindleFrontendContext) {
     .mt-row { display: flex; gap: 8px; flex-wrap: wrap; }
     .mt-row > .mt-btn { flex: 1; }
 
-    /* ----- Popover ----- */
-    .mt-popover { position: fixed; z-index: 99999; right: 20px; bottom: 80px; width: 380px; max-width: calc(100vw - 24px);
+    /* ----- Popover -----
+       z-index 10000: above Lumiverse's drawer (9992) and below its modals
+       (10003), so dialogs opened from the popover appear on top of it. */
+    .mt-popover { position: fixed; z-index: 10000; right: 20px; bottom: 80px; width: 380px; max-width: calc(100vw - 24px);
       max-height: min(560px, calc(100vh - 110px)); display: flex; flex-direction: column; overflow: hidden;
       font-size: ${fs(13)}; color: var(--lumiverse-text, rgba(255,255,255,0.9));
       background: var(--lumiverse-bg-elevated, rgba(35,30,48,0.9)); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
@@ -283,7 +285,7 @@ export function setup(ctx: SpindleFrontendContext) {
     .mt-inline .mt-input { flex: 1; }
 
     /* Fallback dialog chrome, only for hosts without ctx.ui.showModal. */
-    .mt-overlay { position: fixed; inset: 0; z-index: 100000; display: flex; align-items: center; justify-content: center;
+    .mt-overlay { position: fixed; inset: 0; z-index: 10003; display: flex; align-items: center; justify-content: center;
       background: var(--lumiverse-modal-backdrop, rgba(0,0,0,0.6)); }
     .mt-modal { width: 92%; max-height: 82vh; display: flex; flex-direction: column; overflow: hidden;
       background: var(--lumiverse-gradient-modal, rgb(28 24 38)); border: 1px solid var(--lumiverse-border, rgba(147,112,219,0.12));
@@ -406,6 +408,11 @@ export function setup(ctx: SpindleFrontendContext) {
   let activeFootEl: HTMLElement | null = null;
   let popoverCloseHandler: ((e: MouseEvent) => void) | null = null;
   let popoverKeyHandler: ((e: KeyboardEvent) => void) | null = null;
+  // The row the user just toggled, and where it was in the list. Turning a
+  // mode on or off adds or removes it in "On in this chat" at the top, which
+  // would push the clicked row up or down; after the update the list scrolls
+  // so the row stays under the pointer.
+  let toggleAnchor: { section: string; name: string; offset: number; focused: boolean; at: number } | null = null;
   // The second row of popover actions (export/import, config, tidy).
   let moreActionsOpen = false;
   // Timestamp of the last outside-click close. Clicking the input bar button
@@ -425,11 +432,29 @@ export function setup(ctx: SpindleFrontendContext) {
     activeFootEl = null;
   }
 
+  function findModeRow(list: HTMLElement, section: string, name: string): HTMLElement | null {
+    for (const row of list.querySelectorAll<HTMLElement>('.mt-mode')) {
+      if (row.dataset.section === section && row.dataset.mode === name) return row;
+    }
+    return null;
+  }
+
   function refreshPopoverList() {
     if (!activeListEl) return;
-    const scroll = activeListEl.scrollTop;
-    renderModeList(activeListEl);
-    activeListEl.scrollTop = scroll;
+    const list = activeListEl;
+    const scroll = list.scrollTop;
+    renderModeList(list);
+    list.scrollTop = scroll;
+    const anchor = toggleAnchor;
+    toggleAnchor = null;
+    if (anchor && Date.now() - anchor.at < 5000) {
+      const row = findModeRow(list, anchor.section, anchor.name);
+      if (row) {
+        const offset = row.getBoundingClientRect().top - list.getBoundingClientRect().top;
+        list.scrollTop += offset - anchor.offset;
+        if (anchor.focused) row.querySelector<HTMLElement>('.mt-mode-toggle')?.focus({ preventScroll: true });
+      }
+    }
     renderPopoverCount();
     if (activeFootEl) renderPopoverFooter(activeFootEl);
   }
@@ -933,7 +958,7 @@ export function setup(ctx: SpindleFrontendContext) {
       const familyNames = Array.from(fams.keys()).sort(naturalCompare);
       if (familyNames.length === 0) {
         // No families in this group (e.g. the built-in groups): plain list.
-        for (const m of loose) content.appendChild(renderModeRow(m));
+        for (const m of loose) content.appendChild(renderModeRow(m, key));
       } else {
         // Modes without a family go under one "General" header at the top,
         // so they don't sit expanded between the family headers.
@@ -945,15 +970,17 @@ export function setup(ctx: SpindleFrontendContext) {
         }
       }
     } else {
-      for (const mode of items) content.appendChild(renderModeRow(mode));
+      for (const mode of items) content.appendChild(renderModeRow(mode, key));
     }
     section.append(header, content);
     return section;
   }
 
-  function renderModeRow(mode: ModeView): HTMLElement {
+  function renderModeRow(mode: ModeView, section: string): HTMLElement {
     const on = mode.status === 'ON';
     const row = el('div', `mt-mode${on ? ' mt-mode-on' : ''}`);
+    row.dataset.section = section;
+    row.dataset.mode = mode.name;
     const toggle = el('button', 'mt-mode-toggle');
     toggle.type = 'button';
     toggle.setAttribute('role', 'switch');
@@ -963,7 +990,17 @@ export function setup(ctx: SpindleFrontendContext) {
     text.appendChild(el('span', 'mt-mode-name', mode.name));
     if (mode.description) text.appendChild(el('span', 'mt-mode-desc', mode.description));
     toggle.append(text, switchControl(on, '', undefined, true));
-    toggle.addEventListener('click', () => send({ type: 'toggle_mode', modeName: mode.name }));
+    toggle.addEventListener('click', () => {
+      const list = activeListEl;
+      if (list) {
+        toggleAnchor = {
+          section, name: mode.name, at: Date.now(),
+          offset: row.getBoundingClientRect().top - list.getBoundingClientRect().top,
+          focused: document.activeElement === toggle,
+        };
+      }
+      send({ type: 'toggle_mode', modeName: mode.name });
+    });
     const edit = iconButton('pencil', `Edit ${mode.name}`, (e) => {
       e.stopPropagation();
       showAddEditPrompt({ name: mode.name, group: mode.group, description: mode.description });
@@ -976,17 +1013,28 @@ export function setup(ctx: SpindleFrontendContext) {
   // Lumiverse's own modal when the host has it (its header, close button and
   // theme), otherwise a themed overlay. Each dialog is tracked so the popover
   // stays open while one is in use and unload closes any left open.
-  interface Dialog { body: HTMLElement; footer: HTMLElement; close: () => void }
+  interface Dialog { key: string; body: HTMLElement; footer: HTMLElement; close: () => void }
   const openDialogs = new Set<Dialog>();
 
-  function openDialog(title: string, width = 420): Dialog {
+  // True (and focuses it) if a dialog with this key is already open, so a
+  // second click on Presets, Add, Export... doesn't stack another copy.
+  function dialogAlreadyOpen(key: string): boolean {
+    for (const d of openDialogs) {
+      if (d.key !== key) continue;
+      d.body.querySelector<HTMLElement>('input, textarea, button')?.focus();
+      return true;
+    }
+    return false;
+  }
+
+  function openDialog(title: string, width = 420, key = title): Dialog {
     const body = el('div', 'mt-dialog');
     const footer = el('div', 'mt-dialog-foot');
     let closed = false;
     let dismissHost: (() => void) | null = null;
     let overlay: HTMLElement | null = null;
     const dialog: Dialog = {
-      body, footer,
+      key, body, footer,
       close: () => {
         if (closed) return;
         closed = true;
@@ -1062,7 +1110,8 @@ export function setup(ctx: SpindleFrontendContext) {
   }
 
   function showAddEditPrompt(prefill?: { name: string; group: string; description: string }) {
-    const d = openDialog(prefill ? 'Edit mode' : 'Add mode', 440);
+    if (dialogAlreadyOpen('mode-editor')) return;
+    const d = openDialog(prefill ? 'Edit mode' : 'Add mode', 440, 'mode-editor');
 
     const nameInput = el('input', 'mt-input');
     nameInput.type = 'text';
@@ -1177,7 +1226,8 @@ export function setup(ctx: SpindleFrontendContext) {
       showThemedAlert('You have no custom or edited modes to export yet.', 'Export modes');
       return;
     }
-    const d = openDialog('Export modes', 400);
+    if (dialogAlreadyOpen('export')) return;
+    const d = openDialog('Export modes', 400, 'export');
     addToDialog(d, el('p', 'mt-hint', 'Choose which groups of your custom modes to export.'));
     const boxes: Array<{ group: string; cb: HTMLInputElement }> = [];
     const list = el('div', 'mt-check-list');
@@ -1219,7 +1269,8 @@ export function setup(ctx: SpindleFrontendContext) {
         : 'No modes found. Each line should look like: Name - Group - Description', 'Import modes');
       return;
     }
-    const d = openDialog('Import modes', 460);
+    if (dialogAlreadyOpen('import')) return;
+    const d = openDialog('Import modes', 460, 'import');
     addToDialog(d, el('p', 'mt-hint', `${r.valid} mode${r.valid === 1 ? '' : 's'} in the file · ${r.groups.join(', ')}`));
 
     const stats = el('div', 'mt-stats');
@@ -1290,7 +1341,8 @@ export function setup(ctx: SpindleFrontendContext) {
   // ===== Presets Dialog =====
   function showPresetsDialog() {
     if (!state) return;
-    const d = openDialog('Presets', 440);
+    if (dialogAlreadyOpen('presets')) return;
+    const d = openDialog('Presets', 440, 'presets');
     addToDialog(d, el('p', 'mt-hint', 'Save this chat’s active modes as a preset, or load one into this chat.'));
 
     // Save
@@ -1359,7 +1411,8 @@ export function setup(ctx: SpindleFrontendContext) {
   }
 
   function showRenamePrompt(oldName: string, onRename: (newName: string) => void) {
-    const d = openDialog('Rename preset', 360);
+    if (dialogAlreadyOpen('rename')) return;
+    const d = openDialog('Rename preset', 360, 'rename');
     const input = el('input', 'mt-input');
     input.type = 'text';
     input.value = oldName;
