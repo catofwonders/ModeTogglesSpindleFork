@@ -16,7 +16,7 @@ afterAll(() => GlobalRegistrator.unregister());
 
 type Handler = (payload: any) => void;
 
-function createHost() {
+function createHost(opts: { modal?: boolean } = {}) {
   const backendHandlers = new Set<Handler>();
   const eventHandlers = new Map<string, Set<Handler>>();
   const sent: any[] = [];
@@ -79,9 +79,27 @@ function createHost() {
     },
     uploads: { async pickFile() { return []; } },
   };
+  const modals: any[] = [];
+  if (opts.modal) {
+    ctx.ui.showModal = (o: any) => {
+      if (modals.filter((m) => !m.dismissed).length >= 2) throw new Error('modal stack limit');
+      const root = document.createElement('div');
+      root.className = 'host-modal';
+      document.body.appendChild(root);
+      const onDismiss = new Set<() => void>();
+      const m: any = {
+        title: o.title, root, dismissed: false,
+        dismiss() { if (m.dismissed) return; m.dismissed = true; root.remove(); onDismiss.forEach((h) => h()); },
+        setTitle(t: string) { m.title = t; },
+        onDismiss(h: () => void) { onDismiss.add(h); return () => onDismiss.delete(h); },
+      };
+      modals.push(m);
+      return m;
+    };
+  }
 
   return {
-    ctx, sent, tabs, actions,
+    ctx, sent, tabs, actions, modals,
     get cleanupCalls() { return cleanupCalls; },
     fromBackend(payload: any) { for (const h of [...backendHandlers]) h(payload); },
     emit(event: string, payload: any) { for (const h of [...(eventHandlers.get(event) ?? [])]) h(payload); },
@@ -111,8 +129,7 @@ function stateFor(chatId: string, on: string[]) {
   };
 }
 
-const popover = () =>
-  [...document.body.children].find((el) => (el as HTMLElement).style?.position === 'fixed') as HTMLElement | undefined;
+const popover = () => (document.querySelector('.mt-popover') as HTMLElement | null) ?? undefined;
 
 let setup: (ctx: any) => () => void;
 
@@ -226,11 +243,68 @@ describe('enabling again', () => {
     expect(first.tabs[0].badge).toBe('1'); // the old tab saw nothing new
 
     host.clickAction();
-    expect(document.body.querySelectorAll('div').length).toBeGreaterThan(0);
-    expect([...document.body.children].filter((el) => (el as HTMLElement).style?.position === 'fixed').length).toBe(1);
+    expect(document.querySelectorAll('.mt-popover').length).toBe(1);
 
     teardown();
     expect(host.subscriptionCount()).toBe(0);
     expect(popover()).toBeUndefined();
+  });
+});
+
+describe('dialogs in Lumiverse\'s own modal', () => {
+  test('a dialog opens in the host modal, keeps the popover open, and closes on disable', async () => {
+    const host = createHost({ modal: true });
+    const teardown = setup(host.ctx);
+    host.fromBackend(stateFor('c1', ['Power 0: Rules']));
+    host.clickAction();
+    await sleep(80); // the popover's outside-click listener is attached after 50 ms
+
+    // "Presets" in the popover footer opens a host modal.
+    const presetsBtn = [...document.querySelectorAll('.mt-action')].find((b) => b.textContent?.includes('Presets')) as HTMLElement;
+    presetsBtn.click();
+    expect(host.modals.length).toBe(1);
+    expect(host.modals[0].title).toBe('Presets');
+    expect(document.querySelector('.mt-overlay')).toBeNull();
+
+    // Clicking inside the modal does not close the popover.
+    host.modals[0].root.querySelector('input')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(popover()).toBeDefined();
+
+    teardown();
+    expect(host.modals[0].dismissed).toBe(true);
+    expect(popover()).toBeUndefined();
+    expect(host.subscriptionCount()).toBe(0);
+  });
+
+  test('past the host\'s two-modal limit, a third dialog falls back to the themed overlay', () => {
+    const host = createHost({ modal: true });
+    const teardown = setup(host.ctx);
+    host.fromBackend(stateFor('c1', []));
+    host.fromBackend({ type: 'export_data', text: '', count: 0 });
+    host.fromBackend({ type: 'export_data', text: '', count: 0 });
+    host.fromBackend({ type: 'export_data', text: '', count: 0 });
+    expect(host.modals.length).toBe(2);
+    expect(document.querySelectorAll('.mt-overlay').length).toBe(1);
+    teardown();
+    expect(document.querySelector('.mt-overlay')).toBeNull();
+    expect(host.modals.every((m) => m.dismissed)).toBe(true);
+  });
+});
+
+describe('keyboard and screen readers', () => {
+  test('each mode is a labelled switch that reports its state', () => {
+    const host = createHost();
+    const teardown = setup(host.ctx);
+    host.fromBackend(stateFor('c1', ['Tone: Grim']));
+    host.clickAction();
+    const toggles = [...document.querySelectorAll('.mt-mode-toggle')] as HTMLButtonElement[];
+    const grim = toggles.find((t) => t.textContent?.includes('Tone: Grim'))!;
+    expect(grim.tagName).toBe('BUTTON');
+    expect(grim.getAttribute('role')).toBe('switch');
+    expect(grim.getAttribute('aria-checked')).toBe('true');
+    host.sent.length = 0;
+    grim.click();
+    expect(host.sent).toEqual([{ type: 'toggle_mode', modeName: 'Tone: Grim', chatId: 'c1' }]);
+    teardown();
   });
 });
