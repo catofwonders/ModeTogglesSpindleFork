@@ -45,6 +45,10 @@ export function setup(ctx: SpindleFrontendContext) {
   let tab: any = null;
   let toggleAction: any = null;
   let currentChatId: string = '';
+  // Unsubscribe functions for everything this setup subscribes to. Lumiverse
+  // also drops them on unload, but releasing them here keeps teardown complete
+  // on any host and lets the extension be set up again cleanly.
+  const unsubs: Array<() => void> = [];
   // Picker for "{{modes}} inside a preset block" (filled on request).
   let presetList: Array<{ id: string; name: string }> | null = null;
   let presetListError = '';
@@ -147,11 +151,11 @@ export function setup(ctx: SpindleFrontendContext) {
     title: 'Mode Toggles',
     iconSvg: MICROCHIP_SVG,
   });
-  tab.onActivate(() => {
+  unsubs.push(tab.onActivate(() => {
     send({ type: 'request_state' });
     // Presets may have been added or deleted since the list was loaded.
     if (presetList !== null) send({ type: 'list_presets' });
-  });
+  }));
   renderSettingsTab();
 
   // ===== Input Bar Action: Quick Toggle Menu =====
@@ -161,10 +165,10 @@ export function setup(ctx: SpindleFrontendContext) {
     iconSvg: MICROCHIP_SVG_14,
     enabled: true,
   });
-  toggleAction.onClick(() => showTogglePopover());
+  unsubs.push(toggleAction.onClick(() => showTogglePopover()));
 
   // ===== Backend Messages =====
-  ctx.onBackendMessage((payload: any) => {
+  unsubs.push(ctx.onBackendMessage((payload: any) => {
     if (payload.type === 'state_update') {
       state = payload as StateUpdate;
       // Always sync chatId from backend
@@ -228,23 +232,21 @@ export function setup(ctx: SpindleFrontendContext) {
         );
       }
     }
-  });
+  }));
 
   // Request initial state
   send({ type: 'request_state' });
 
-  // Proactively sync on chat switches so the popover/tab UI reflects the new
-  // chat immediately, instead of waiting for a backend-driven state_update.
-  ctx.events.on('CHAT_CHANGED', (data: any) => {
-    // Lumiverse 1.0 payload is { chat: { id }, changedFields? };
-    // fall back to the older flat { chatId } for pre-1.0 hosts.
-    const newId = data?.chat?.id ?? data?.chatId;
-    if (newId && newId !== currentChatId) {
-      currentChatId = newId;
-    }
-    // Always ask backend for the fresh state — it will resolve via getActive()
+  // Sync on chat switches so the popover/tab UI reflects the new chat right
+  // away. The backend also pushes the new chat's state when it sees the switch;
+  // asking here covers a backend that started before the frontend was ready.
+  // chatId is null on the home screen.
+  unsubs.push(ctx.events.on('CHAT_SWITCHED', (data: any) => {
+    const newId = typeof data?.chatId === 'string' ? data.chatId : '';
+    if (!newId) return;
+    if (newId !== currentChatId) currentChatId = newId;
     send({ type: 'request_state' });
-  });
+  }));
 
   // ===== Active popover tracking =====
   let activePopover: HTMLElement | null = null;
@@ -1379,9 +1381,15 @@ export function setup(ctx: SpindleFrontendContext) {
 
   // Cleanup
   return () => {
+    for (const unsub of unsubs.splice(0)) {
+      try { unsub(); } catch { /* the host may have released it already */ }
+    }
+    closePopover();
+    // Add/Edit, Presets, Import and confirm dialogs are appended to the page
+    // body, so a dialog left open would outlive the extension.
+    document.querySelectorAll('.mt-overlay').forEach((el) => el.remove());
     ctx.dom.cleanup();
     if (tab) tab.destroy();
     if (toggleAction) toggleAction.destroy();
-    closePopover();
   };
 }

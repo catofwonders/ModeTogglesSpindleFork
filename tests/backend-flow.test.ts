@@ -328,3 +328,54 @@ describe('deleted presets', () => {
     expect(lastState().presetBlocks.find((a: any) => a.presetId === 'p9')).toBeUndefined();
   });
 });
+
+describe('switching chats', () => {
+  const onModes = () => lastState().modes.filter((m: any) => m.status === 'ON').map((m: any) => m.name);
+
+  test('opening another chat sends that chat\'s modes right away', async () => {
+    chats.set('c4', { mode_toggles: ['Power 0: Rules'] });
+    chats.set('c5', {});
+    activeChat = 'c4';
+    emit('CHAT_SWITCHED', { chatId: 'c4' });
+    await settle();
+    expect(lastState().chatId).toBe('c4');
+    expect(onModes()).toEqual(['Power 0: Rules']);
+    expect(lastState().activeCount).toBe(1);
+
+    activeChat = 'c5';
+    emit('CHAT_SWITCHED', { chatId: 'c5' });
+    await settle();
+    expect(lastState().chatId).toBe('c5');
+    expect(lastState().activeCount).toBe(0);
+  });
+
+  test('an older Lumiverse that only sends SETTINGS_UPDATED is handled too', async () => {
+    activeChat = 'c4';
+    emit('SETTINGS_UPDATED', { key: 'activeChatId', value: 'c4' });
+    await settle();
+    expect(lastState().chatId).toBe('c4');
+    expect(lastState().activeCount).toBe(1);
+  });
+
+  test('the same switch arriving twice sends only one update', async () => {
+    activeChat = 'c5';
+    emit('CHAT_SWITCHED', { chatId: 'c5' });
+    emit('SETTINGS_UPDATED', { key: 'activeChatId', value: 'c5' });
+    await settle();
+    const before = sent.length;
+    emit('CHAT_SWITCHED', { chatId: 'c5' });
+    await settle();
+    expect(sent.length).toBe(before);
+    expect(lastState().chatId).toBe('c5');
+  });
+
+  test('going back to the home screen keeps the last chat\'s state', async () => {
+    const before = sent.length;
+    activeChat = null;
+    emit('CHAT_SWITCHED', { chatId: null });
+    emit('SETTINGS_UPDATED', { key: 'theme', value: 'dark' });
+    await settle();
+    expect(sent.length).toBe(before);
+    activeChat = 'c1';
+  });
+});
